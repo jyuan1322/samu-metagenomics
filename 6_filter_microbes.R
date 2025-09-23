@@ -1,5 +1,6 @@
 library(dplyr)
 library(tidyr)
+library(purrr)
 library(readr)
 library(ggplot2)
 library(tools)
@@ -43,44 +44,64 @@ meta_df <- do.call(rbind, lapply(files, read_metaphlan))
 meta_df <- meta_df %>%
   mutate(relative_abundance = as.numeric(relative_abundance))
 
+# Keep only species-level groups
+meta_species <- meta_df %>%
+  filter(str_detect(clade_name, "s__")) %>%
+  mutate(
+    # Extract species name
+    species = str_extract(clade_name, "s__[^|]+")
+  ) %>%
+  group_by(Sample, species) %>%
+  summarise(
+    relative_abundance = sum(relative_abundance, na.rm = TRUE),
+    estimated_number_of_reads_from_the_clade = sum(estimated_number_of_reads_from_the_clade, na.rm = TRUE),
+    .groups = "drop"
+  )
+
 
 # Elbow plot
 # Define a sequence of abundance thresholds, e.g., 0% to 1%
-thresholds <- seq(0, 1, by = 0.01)  # 0%, 1%, 2%, ..., 100% (adjust as needed)
+abundance_thresholds <- seq(0, 0.1, by = 0.001)  # 0% to 10%
+prevalence_thresholds <- c(1, 5, 10, 20)  # number of samples a species must appear in
 
-# Clade must be in at least 5 samples
-elbow_df <- data.frame(
-  Threshold = thresholds,
-  CladesRetained = sapply(thresholds, function(t) {
-    meta_df %>%
-      group_by(clade_name) %>%
-      summarize(n_samples_above = sum(relative_abundance >= t)) %>%
-      filter(n_samples_above >= 5) %>%  # keep same prevalence filter
-      nrow()
-  })
-)
+# Build elbow data for multiple prevalence thresholds
+elbow_df <- expand_grid(
+  Threshold = abundance_thresholds,
+  MinSamples = prevalence_thresholds
+) %>%
+  mutate(
+    CladesRetained = map2_int(Threshold, MinSamples, ~ {
+      meta_species %>%
+        group_by(species) %>%
+        summarize(n_samples_above = sum(relative_abundance >= .x), .groups = "drop") %>%
+        filter(n_samples_above >= .y) %>%
+        nrow()
+    })
+  )
 
-p <- ggplot(elbow_df, aes(x = Threshold, y = CladesRetained)) +
-  geom_line(size = 1.2, color = "steelblue") +
-  geom_point(color = "darkred") +
+# Plot multiple lines
+p <- ggplot(elbow_df, aes(x = Threshold * 100, y = CladesRetained, color = factor(MinSamples))) +
+  geom_line(size = 1.2) +
   theme_minimal() +
   labs(
     x = "Relative Abundance Threshold (%)",
-    y = "Number of Clades Retained",
+    y = "Number of Species Passing Filter",
+    color = "Min Samples Passing Threshold",
     title = "Elbow Plot for Abundance Filtering"
   )
-ggsave("elbow_plot.pdf", plot = p, width = 10, height = 6)
+ggsave("elbow_plot_species_level_09232025.pdf", plot = p, width = 10, height = 6)
+
+
+# ----------
 
 
 
-
-
-# Identify clades that pass the threshold in at least 5 samples
-clade_keep <- meta_df %>%
-  group_by(clade_name) %>%
+# Identify species that pass the threshold in at least 5 samples
+species_keep <- meta_species %>%
+  group_by(species) %>%
   summarize(n_samples_above_threshold = sum(relative_abundance >= 0.1)) %>%
   filter(n_samples_above_threshold >= 5) %>%
-  pull(clade_name)
+  pull(species)
 
 # Filter original dataframe
 meta_filtered <- meta_df %>%
