@@ -142,8 +142,8 @@ n_before <- length(unique(meta_species$Species))
 n_after <- length(unique(meta_filtered$Species))
 cat("Number of clades before filtering:", n_before, "\n")
 cat("Number of clades after filtering:", n_after, "\n")
-# Number of clades before filtering: 2128 
-# Number of clades after filtering: 785
+# Number of clades before filtering: 726 
+# Number of clades after filtering: 153
 
 # after performing filtering, renormalize remaining species' rel abundances to sum to 1
 meta_filtered <- meta_filtered %>%
@@ -526,8 +526,13 @@ meta_df$nutr_score <- as.numeric(meta_df$nutr_score)
 meta_df$nutr_score_scaled <- (meta_df$nutr_score - mean(meta_df$nutr_score, na.rm = TRUE)) / sd(meta_df$nutr_score, na.rm = TRUE)
 meta_df$bmi <- as.numeric(meta_df$bmi)
 meta_df$bmi_scaled <- (meta_df$bmi - mean(meta_df$bmi, na.rm = TRUE)) / sd(meta_df$bmi, na.rm = TRUE)
-meta_df$sex <- ifelse(meta_df$sex %in% c("0","1"), meta_df$sex, NA)
-meta_df$sex <- factor(meta_df$sex, levels = c("0","1"))
+meta_df$sex <- as.character(meta_df$sex)
+meta_df$sex[!meta_df$sex %in% c("0", "1")] <- NA
+meta_df$sex <- factor(meta_df$sex, levels = c("0", "1"))
+
+# binarize sarc_status
+meta_df$sarc_status_bin <- ifelse(meta_df$sarc_status > 0, "Sarc", "NoSarc")
+meta_df$sarc_status_bin <- factor(meta_df$sarc_status_bin, levels = c("NoSarc", "Sarc"))
 
 cor(meta_df$nutr_score_scaled, meta_df$bmi_scaled, method = "spearman", use = "complete.obs")
 # 0.065
@@ -568,46 +573,91 @@ ps_clean <- subset_samples(ps,
                !is.na(alco) &
                !is.na(nutr_score_scaled) &
                !is.na(bmi_scaled) &
-               !is.na(sarc_status))
-dds <- phyloseq_to_deseq2(ps_clean, ~ age_def_scaled + sex + smke + alco + nutr_score_scaled + bmi_scaled + sarc_status)
+               !is.na(sarc_status_bin))
+dds <- phyloseq_to_deseq2(ps_clean, ~ age_def_scaled + sex + smke + alco + nutr_score_scaled + bmi_scaled + sarc_status_bin)
 dds <- DESeq(dds)
-res <- results(dds)
+# res <- results(dds)
+res <- lfcShrink(dds, coef = "sarc_status_bin_Sarc_vs_NoSarc", type = "apeglm")  # or "ashr" or "normal"
 res_df <- as.data.frame(res)
-write.csv(res_df, "deseq2_results.csv", row.names = TRUE)
+write.csv(res_df, "deseq2_results_sarc_bin.csv", row.names = TRUE)
+
+# Get mean relative abundances in control group (NoSarc) instead of basemean
+# Convert counts to relative abundances
+ps_rel <- transform_sample_counts(ps, function(x) x / sum(x))
+ps_ctrl <- subset_samples(ps_rel, sarc_status_bin == "NoSarc")  # adjust level name
+# Convert to matrix
+otu_ctrl <- otu_table(ps_ctrl)
+if(taxa_are_rows(ps_ctrl)) {
+  otu_ctrl <- as.matrix(otu_ctrl)
+} else {
+  otu_ctrl <- t(as.matrix(otu_ctrl))
+}
+# Mean relative abundance per species
+mean_rel_ctrl <- rowMeans(otu_ctrl)
+mean_rel_ctrl <- data.frame(Species = rownames(otu_ctrl),
+                            mean_rel_ctrl = mean_rel_ctrl)
 
 # Visualize DESeq2 results in dotplot
 # Keep only significant species
 sig_res <- res_df %>%
-  filter(!is.na(padj), padj < 0.05)
-sig_res <- sig_res %>%
+  filter(!is.na(padj), padj < 0.05) %>%
   mutate(
-    genus_species = str_extract(rownames(sig_res), "g__[^|]+\\|s__[^|]+"),  # extract genus|species
-    genus_species = str_replace_all(genus_species, "g__|s__", "")          # remove prefixes
+    genus_species = str_extract(rownames(.), "g__[^|]+\\|s__[^|]+"),
+    genus_species = str_replace_all(genus_species, "g__|s__", "")
   )
+
+# Add mean control abundance
+sig_res$fullname <- rownames(sig_res)
+sig_res <- sig_res %>%
+  left_join(mean_rel_ctrl, by = c("fullname" = "Species"))
+
 
 # Create the plot
 p <- ggplot(sig_res, aes(
     x = log2FoldChange,
     y = reorder(genus_species, log2FoldChange),
     color = -log10(pvalue),
-    size = baseMean
+    size = mean_rel_ctrl,
   )) +
   geom_point() +
   geom_vline(xintercept = 0, linetype = "solid", color = "black") +
-  scale_color_viridis_c(option = "turbo") +
+  scale_color_viridis_c(option = "plasma") +
   labs(
     x = "Log2 Fold Change",
     y = "Species",
     color = "-log10(p-value)",
-    size = "baseMean",
+    size = "Mean rel. abund. in NoSarc",
     title = "Differential abundance of significant species"
   ) +
   theme_minimal() +
   theme(axis.text.y = element_text(size = 8))
-ggsave("deseq2_dotplot.pdf", plot = p, width = 10, height = 10)
+ggsave("deseq2_dotplot_sarc_bin.pdf", plot = p, width = 10, height = 10)
 
 
+# Create a significance flag
+res_df$significant <- ifelse(res_df$padj < 0.05,
+                              "Significant", "Not significant")
 
+# Volcano plot
+p_volcano <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(pvalue))) +
+  geom_point(aes(color = significant), alpha = 0.8) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  # geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("Not significant" = "grey70", "Significant" = "red")) +
+  # scale_size_continuous(range = c(0.5, 3)) +
+  labs(
+    x = "Log2 Fold Change",
+    y = "-log10(p-value)",
+    color = "Significance",
+    # size = "Mean abundance",
+    title = "Volcano plot of differential abundance"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+ggsave("deseq2_volcanoplot_sarc_bin.pdf", plot = p_volcano, width = 10, height = 10)
 
 # Write meta_filtered
 write.csv(meta_filtered, "meta_filtered.csv", row.names = FALSE)

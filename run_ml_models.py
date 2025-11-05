@@ -1,3 +1,4 @@
+import pickle
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -48,7 +49,7 @@ binary_cols = ['sex', 'smke', 'alco']
 meta_cov = meta_cov[~(meta_cov['age_def'] < 50)]
 
 # keep only males (for testing stratification in data, and highly variable AUCs)
-# meta_cov = meta_cov[(meta_cov['sex'] == 0)]
+# meta_cov = meta_cov[(meta_cov['sex'] == 1)]
 
 # unify samples between X and y and drop NA values
 # check there are no NAs in the matrix
@@ -75,7 +76,7 @@ assert 'sarc_status_bin' not in X.columns
 # - just the rel abundances
 # - just the covariates
 
-def run_lasso_logreg_pipeline(X, y, continuous_cols=None, binary_cols=None, clr_taxa_cols=None):
+def run_lasso_logreg_pipeline(X, y, continuous_cols=None, binary_cols=None, clr_taxa_cols=None, outfile_cv="cv_results.pkl"):
     # col_scaler = ColumnTransformer(
     #     transformers=[
     #         ('cont', StandardScaler(), continuous_cols),
@@ -109,7 +110,7 @@ def run_lasso_logreg_pipeline(X, y, continuous_cols=None, binary_cols=None, clr_
     # Parameter grid for inner loop to find best hyperparameters
     # NOTE: 'classifier' is the name of the pipeline step containing the logistic regression
     param_grid = {
-        'classifier__C': np.logspace(-2, 2, 40),
+        'classifier__C': np.logspace(-2, 1, 40),
         #'penalty': 'l1'
         #'classifier__kernel': ['linear', 'rbf']
         #'classifier__C': np.logspace(-2, 1, 30),
@@ -118,16 +119,20 @@ def run_lasso_logreg_pipeline(X, y, continuous_cols=None, binary_cols=None, clr_
 
     # Nested cross-validation strategy
     # Outer loop: 5-fold CV
-    # NOTE: in practice, I found that performance tends to vary widely based on
-    # the sex balance in the k folds.
+    # NOTE: in practice, I found that performance improved when I set C range to [-2, 1] instead of [-3, 3]
     # outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=111)
-    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=111)
-    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=222)
+    outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=333)
+    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=111)
+    # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=222)
+    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=333)
+    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=444)
+    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=101)
+    # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=202)
     # outer_cv = KFold(n_splits=5, shuffle=True, random_state=101)
     # inner_cv = KFold(n_splits=5, shuffle=True, random_state=202)
 
     for fold, (train_idx, test_idx) in enumerate(outer_cv.split(X, y), 1):
-        y_train, y_test = y[train_idx], y[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
         print(f"Outer Fold {fold}")
         # print("  Train class distribution:", np.bincount(y_train))
         # print("  Test  class distribution:", np.bincount(y_test))
@@ -187,6 +192,8 @@ def run_lasso_logreg_pipeline(X, y, continuous_cols=None, binary_cols=None, clr_
         return_indices=True,
         n_jobs=-1
     )
+    with open(outfile_cv, "wb") as f:
+        pickle.dump(cv_results, f)
 
     # Plot ROC curves using RocCurveDisplay
     # https://scikit-learn.org/stable/auto_examples/model_selection/plot_roc_crossval.html
@@ -198,9 +205,6 @@ def run_lasso_logreg_pipeline(X, y, continuous_cols=None, binary_cols=None, clr_
     colors = prop_cycle.by_key()['color']
     curve_kwargs_list = [dict(alpha=0.3, lw=1, color=colors[i % len(colors)]) for i in range(n_splits)]
     names = [f'ROC fold {i+1}' for i in range(n_splits)]
-
-    mean_fpr = np.linspace(0, 1, 100)
-    interp_tprs = []
 
     _, ax = plt.subplots(figsize=(6, 6))
     viz = RocCurveDisplay.from_cv_results(
@@ -257,17 +261,170 @@ taxa_cols = [col for col in X.columns.tolist() if isinstance(col, str) and col.s
 clinical_cols = [col for col in X.columns.tolist() if isinstance(col, str) and not col.startswith("k__Bacteria")]
 
 # all predictors
-run_lasso_logreg_pipeline(X=X, y=y, continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols)
+run_lasso_logreg_pipeline(X=X, y=y, continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_full.pkl")
 
 # only taxonomic predictors
 # X_taxon = X[taxa_cols]
-run_lasso_logreg_pipeline(X=X, y=y, continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols)
+run_lasso_logreg_pipeline(X=X, y=y, continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_taxa_only.pkl")
 
 # only clinical covariates
 # X_clinical = X[clinical_cols]
-run_lasso_logreg_pipeline(X=X, y=y, continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None)
+run_lasso_logreg_pipeline(X=X, y=y, continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_clinical_only.pkl")
 
 
+
+# extract summary stats
+cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/cv_results_full_5fstratCV_iseed444_oseed333_Cm2_1.pkl")
+for i, estimator in enumerate(cv_results["estimator"], 1):
+    best_model = estimator.best_estimator_  # the pipeline with tuned C
+    logreg = best_model.named_steps["classifier"]
+    coef = logreg.coef_.ravel()  # 1D array
+    features = best_model.named_steps["scaler"].get_feature_names_out()
+    coef_df = pd.DataFrame({"feature": features, "coef": coef})
+    print(f"\n=== Outer Fold {i} ===")
+    print(coef_df[coef_df["coef"] != 0].sort_values("coef", ascending=False))
+
+coefs = []
+for estimator in cv_results["estimator"]:
+    best_model = estimator.best_estimator_
+    logreg = best_model.named_steps["classifier"]
+    coefs.append(logreg.coef_.ravel())
+
+coefs = np.vstack(coefs)
+
+# Just take feature names from the first model
+features = cv_results["estimator"][0].best_estimator_.named_steps["scaler"].get_feature_names_out()
+
+coef_summary = pd.DataFrame({
+    "feature": features,
+    "mean_coef": coefs.mean(axis=0),
+    "std_coef": coefs.std(axis=0),
+    "nonzero_fraction": (coefs != 0).mean(axis=0)
+})
+coef_summary["odds_ratio"] = np.exp(coef_summary["mean_coef"])
+coef_summary.sort_values("nonzero_fraction", ascending=False).head(20)
+coef_summary.to_csv("lasso_L1_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
+
+# Extract genus and species into label for taxonomic rows
+mask = coef_summary["feature"].str.contains(r"g__.*\|s__", na=False)
+# Initialize column as copy (so unaffected features stay intact)
+coef_summary["genus_species"] = coef_summary["feature"]
+coef_summary.loc[mask, "genus_species"] = (
+    coef_summary.loc[mask, "feature"]
+    .str.extract(r"g__([^|]+)\|s__([^|]+)")
+    .fillna("")
+    .agg(" ".join, axis=1)
+    .str.strip()
+)
+coef_summary["plot_label"] = coef_summary["genus_species"]
+coef_summary.loc[coef_summary["nonzero_fraction"] < 0.2, "plot_label"] = ""
+# top_features = coef_summary.loc[coef_summary.nonzero_fraction > 0.3]
+# top_features = top_features.sort_values("mean_coef")
+
+# plt.figure(figsize=(6, len(top_features)/2))
+# plt.barh(top_features["feature"], top_features["mean_coef"])
+# plt.xlabel("Mean log-odds coefficient")
+# plt.title("Stable features across folds")
+# plt.tight_layout()
+# plt.show()
+
+plt.figure(figsize=(10, 6))
+sns.scatterplot(
+    data=coef_summary,
+    x="odds_ratio",
+    y="nonzero_fraction",
+    s=30,
+    color="steelblue",
+    edgecolor="black"
+)
+
+# Label points
+for _, row in coef_summary.iterrows():
+    plt.text(
+        row["odds_ratio"],
+        row["nonzero_fraction"],
+        row["plot_label"],
+        fontsize=7,
+        alpha=0.7
+    )
+
+plt.axvline(1, color="red", linestyle="--", alpha=0.6)
+plt.xlabel("Odds Ratio")
+plt.ylabel("Nonzero Fraction")
+plt.title("Feature Nonzero Fraction vs Odds Ratio")
+plt.tight_layout()
+plt.savefig("lasso_L1_stratifiedkfold_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
+plt.show()
+
+
+
+
+
+
+# Read the DESeq2 results file
+# deseq2_df = pd.read_csv("output/deseq2_results.csv", index_col=0)
+deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/deseq2_results_sarc_bin.csv", index_col=0)
+
+# Read L1 logistic regression coefficients
+# (from your coef_summary DataFrame)
+logreg = coef_summary.copy()
+logreg = logreg.set_index("feature")
+logreg.index = logreg.index.str.replace('^clr_taxa__', '', regex=True)
+
+merged = logreg.merge(
+    deseq2_df,
+    left_index=True,
+    right_index=True,
+    how="inner",
+    suffixes=("_logreg", "_deseq")
+)
+print(merged.shape)
+
+# compare direction and magnitude of effects
+# Filter merged DataFrame for significant DESeq2 results
+sig_merged = merged[merged["padj"] < 0.05]
+sig_merged = sig_merged[sig_merged["nonzero_fraction"] > 0]
+
+# Data
+x = np.sign(sig_merged["mean_coef"].values) * sig_merged["nonzero_fraction"].values
+y = sig_merged["log2FoldChange"].values
+labels = sig_merged["genus_species"].values
+
+# Scatter plot
+plt.figure(figsize=(8,6))
+plt.scatter(x, y, alpha=0.7)
+
+# Trendline through origin
+m = np.sum(x * y) / np.sum(x**2)
+y_pred = m * x
+plt.plot(x, y_pred, color='red', linewidth=2, label=f"y = {m:.2f}x")
+
+# R² (through origin)
+ss_res = np.sum((y - y_pred)**2)
+ss_tot = np.sum(y**2)
+r2 = 1 - ss_res/ss_tot
+plt.text(0.05, 0.95, f"y = {m:.2f}x\nR² = {r2:.2f}",
+         transform=plt.gca().transAxes,
+         fontsize=10, verticalalignment='top',
+         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.7))
+
+# Add labels to points
+for i, point_label in enumerate(sig_merged["genus_species"]):
+  plt.text(x[i], y[i], point_label, fontsize=8, alpha=0.7)
+
+# Axes lines
+plt.axhline(0, color='gray', linestyle='--')
+plt.axvline(0, color='gray', linestyle='--')
+plt.xlabel("L1 Logistic sign(mean coef) * nonzero fraction")
+plt.ylabel("DESeq2 log2 fold change")
+plt.title("Comparison of Logistic Regression and DESeq2 effects")
+
+plt.legend()
+plt.tight_layout()
+plt.savefig("lasso_L1_stratifiedkfold_i444_o333_vs_deseq2_effects.pdf", format="pdf", bbox_inches="tight")
+plt.show()
+
+sig_merged.to_csv("lasso_L1_stratifiedkfold_i444_vs_deseq2_effects.csv", index=False)
 
 """clf = LogisticRegressionCV(
     Cs=10,            # number of regularization strengths to try
