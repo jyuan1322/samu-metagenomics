@@ -319,6 +319,7 @@ print(all(meta_df$File_ID %in% sample_order))
 meta_df <- meta_df[, c(
   "record_id",
   "Block",
+  "Full.SaMu",
   "sarc_status",
   "EWGSOP_strength",
   "EWGSOP_mass",
@@ -663,5 +664,5 @@ ggsave("deseq2_volcanoplot_sarc_bin.pdf", plot = p_volcano, width = 10, height =
 write.csv(meta_filtered, "meta_filtered.csv", row.names = FALSE)
 
 # Write meta_df
-write.csv(meta_df, "meta_df.csv", row.names = FALSE)
+write.csv(meta_df, "meta_df_FullSaMu.csv", row.names = FALSE)
 
