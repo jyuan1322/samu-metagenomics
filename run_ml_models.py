@@ -1,6 +1,7 @@
 import pickle
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -15,8 +16,9 @@ from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, Gradien
 # for neural net
 from fcnn_wrapper import *
 
-meta_filtered = pd.read_csv("meta_filtered.csv")
-meta_df = pd.read_csv("meta_df_FullSaMu.csv")
+input_dir = Path("/data/local/jy1008/SaMu/results/02102026")
+meta_filtered = pd.read_csv(input_dir / "meta_filtered.csv")
+meta_df = pd.read_csv(input_dir / "meta_df_FullSaMu.csv")
 
 print(meta_filtered.head())
 print(meta_filtered.info())
@@ -25,6 +27,7 @@ print(meta_df.info())
 
 # remove samples who have Full.SaMu == 0
 meta_df = meta_df[(meta_df['Full.SaMu'] == 1)]
+meta_df = meta_df.copy()
 
 # binarize sarc_status for lasso logistic regression
 meta_df["sarc_status_bin"] = (meta_df["sarc_status"] > 0).astype(int)
@@ -235,11 +238,11 @@ def run_lasso_logreg_pipeline(
     # Outer loop: 5-fold CV
     # NOTE: in practice, I found that performance improved when I set C range to [-2, 1] instead of [-3, 3]
     # outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=111)
-    # outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=333)
+    outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=333)
 
     # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=111)
     # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=222)
-    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=333)
+    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=333)
     inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=444)
     # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=101)
     # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=202)
@@ -282,8 +285,9 @@ def run_lasso_logreg_pipeline(
         n_jobs=-1
     )
     # for neural network, disable pickling for now
-    # with open(outfile_cv, "wb") as f:
-    #     pickle.dump(cv_results, f)
+    # if model_type == "lasso_logreg":
+    with open(outfile_cv, "wb") as f:
+        pickle.dump(cv_results, f)
 
     # === ROC plot ===
     # Plot ROC curves using RocCurveDisplay
@@ -382,7 +386,9 @@ run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn", continuous_cols=continu
 
 
 # extract summary stats
-cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/cv_results_full_5fstratCV_iseed444_oseed333_Cm2_1.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/cv_results_full_5fstratCV_iseed444_oseed333_Cm2_1.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/cv_results_l1logreg_full.pkl")
+cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/02102026/ml_models_taxa_only/cv_results_l1logreg_full.pkl")
 for i, estimator in enumerate(cv_results["estimator"], 1):
     best_model = estimator.best_estimator_  # the pipeline with tuned C
     logreg = best_model.named_steps["classifier"]
@@ -407,7 +413,9 @@ coef_summary = pd.DataFrame({
     "feature": features,
     "mean_coef": coefs.mean(axis=0),
     "std_coef": coefs.std(axis=0),
-    "nonzero_fraction": (coefs != 0).mean(axis=0)
+    "nonzero_fraction": (coefs != 0).mean(axis=0),
+    "lower_perc12_5": np.percentile(coefs, 12.5, axis=0),
+    "upper_perc87_5": np.percentile(coefs, 87.5, axis=0)
 })
 coef_summary["odds_ratio"] = np.exp(coef_summary["mean_coef"])
 coef_summary.sort_values("nonzero_fraction", ascending=False).head(20)
@@ -436,6 +444,7 @@ coef_summary.loc[coef_summary["nonzero_fraction"] < 0.2, "plot_label"] = ""
 # plt.tight_layout()
 # plt.show()
 
+import seaborn as sns
 plt.figure(figsize=(10, 6))
 sns.scatterplot(
     data=coef_summary,
@@ -471,7 +480,8 @@ plt.show()
 
 # Read the DESeq2 results file
 # deseq2_df = pd.read_csv("output/deseq2_results.csv", index_col=0)
-deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/deseq2_results_sarc_bin.csv", index_col=0)
+# deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/deseq2_results_sarc_bin.csv", index_col=0)
+deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/results/02102026/deseq2_results_sarc_bin.csv", index_col=0)
 
 # Read L1 logistic regression coefficients
 # (from your coef_summary DataFrame)
@@ -534,6 +544,321 @@ plt.show()
 
 sig_merged.to_csv("lasso_L1_stratifiedkfold_i444_vs_deseq2_effects.csv", index=False)
 
+
+
+
+
+
+
+
+
+
+
+# Combine DESeq2 and models into one dataframe, and create table for visualization
+# Feature importance: 
+# -- DESeq2: log2 fold change and adjusted p-value
+# -- Lasso logreg: log odds ratio > 1
+# -- random forest: take 75% quantile of Gini feature importances, check if exp(coef) > 1
+# -- FCNN: average integrated gradients using Captum (v0.7.0)
+
+# feature importance for random forest
+cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_rf_full.pkl")
+
+# from sklearn.inspection import permutation_importance
+
+
+importances = []
+
+for estimator in cv_results["estimator"]:
+    best_model = estimator.best_estimator_
+    rf = best_model.named_steps["classifier"]
+
+    importances.append(rf.feature_importances_)
+
+importances = np.vstack(importances)
+
+features = cv_results["estimator"][0] \
+    .best_estimator_ \
+    .named_steps["scaler"] \
+    .get_feature_names_out()
+
+importance_summary = pd.DataFrame({
+    "feature": features,
+    "mean_importance": importances.mean(axis=0),
+    "std_importance": importances.std(axis=0),
+    "positive_fraction": (importances > 0).mean(axis=0),
+    "lower_perc12_5": np.percentile(importances, 12.5, axis=0),
+    "upper_perc87_5": np.percentile(importances, 87.5, axis=0)
+})
+importance_summary.sort_values("mean_importance", ascending=False).head(20)
+importance_summary.to_csv("rf_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
+
+### Boruta version
+"""
+np.int = int
+np.float = float
+np.bool = bool
+from boruta import BorutaPy
+for estimator in cv_results["estimator"]:
+    best_model = estimator.best_estimator_
+    rf = best_model.named_steps["classifier"]
+
+    boruta = BorutaPy(
+    rf,
+    n_estimators='auto',
+    alpha=0.05,
+    two_step=True,
+    max_iter=200,
+    random_state=42
+    )
+
+    boruta.fit(X.values, y.values)
+
+    selected_features = X.columns[boruta.support_]
+"""
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/cv_results_rf_full.pkl")
+cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_rf_full.pkl")
+
+np.int = int
+np.float = float
+np.bool = bool
+from boruta import BorutaPy
+# import numpy as np
+# import pandas as pd
+
+boruta_rankings = []
+boruta_selected = []
+boruta_selected_weak = []
+
+for fold_idx, estimator in enumerate(cv_results["estimator"]):
+    print(fold_idx)
+
+    best_model = estimator.best_estimator_
+    rf = best_model.named_steps["classifier"]
+
+    train_idx = cv_results["indices"]["train"][fold_idx]
+
+    X_train_fold = X.iloc[train_idx]
+    y_train_fold = y.iloc[train_idx]
+
+    X_train_transformed = best_model.named_steps["scaler"].transform(X_train_fold)
+
+    boruta = BorutaPy(
+        rf,
+        n_estimators='auto',
+        max_iter=100,
+        random_state=42 + fold_idx
+    )
+
+    boruta.fit(X_train_transformed, y_train_fold)
+
+    boruta_rankings.append(boruta.ranking_)
+    boruta_selected.append(boruta.support_)
+    boruta_selected_weak.append(boruta.support_weak_)
+
+boruta_rankings = np.vstack(boruta_rankings)
+boruta_selected = np.vstack(boruta_selected)
+boruta_selected_weak = np.vstack(boruta_selected_weak)
+
+features = cv_results["estimator"][0] \
+    .best_estimator_ \
+    .named_steps["scaler"] \
+    .get_feature_names_out()
+
+boruta_summary = pd.DataFrame({
+    "feature": features,
+    "selection_frequency": boruta_selected.mean(axis=0),
+    "weak_selection_frequency": boruta_selected_weak.mean(axis=0),
+    "mean_ranking": boruta_rankings.mean(axis=0),
+    "median_ranking": np.median(boruta_rankings, axis=0),
+    "min_ranking": boruta_rankings.min(axis=0),
+    "max_ranking": boruta_rankings.max(axis=0)
+})
+
+boruta_summary = boruta_summary.sort_values(
+    ["selection_frequency", "mean_ranking"],
+    ascending=[False, True]
+)
+
+boruta_summary.head(20)
+boruta_summary.to_csv("rf_feature_importances_Boruta_50repkfold.csv", index=False)
+# boruta_summary.to_csv("rf_feature_importances_Boruta_5fold.csv", index=False)
+
+
+
+# feature importance for Neural Network
+
+"""
+all_importances = []
+
+for fold_idx, estimator in enumerate(cv_results["estimator"]):
+    print(fold_idx)
+    best_model = estimator.best_estimator_  # Pipeline with your trained FFNN
+    
+    # Get test indices from cv_results
+    test_idx = cv_results["indices"]["test"][fold_idx]
+    X_test_fold = X.iloc[test_idx]
+    y_test_fold = y.iloc[test_idx]
+
+    X_test_fold = X_test_fold.astype(np.float32)
+
+    # Compute permutation importance
+    result = permutation_importance(
+        best_model,
+        X_test_fold,
+        y_test_fold,
+        n_repeats=5,          # increase if you want more stable estimate
+        random_state=42,
+        scoring="roc_auc",
+        n_jobs=-1
+    )
+    
+    all_importances.append(result.importances_mean)
+
+all_importances = np.vstack(all_importances)
+features = best_model.named_steps["scaler"].get_feature_names_out()
+
+importance_summary = pd.DataFrame({
+    "feature": features,
+    "mean_importance": all_importances.mean(axis=0),
+    "std_importance": all_importances.std(axis=0),
+    "positive_fraction": (all_importances > 0).mean(axis=0)
+})
+
+importance_summary = importance_summary.sort_values("mean_importance", ascending=False)
+importance_summary.to_csv("fcnn_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
+"""
+import pandas as pd
+import numpy as np
+import torch
+from captum.attr import IntegratedGradients
+
+# Load CV results
+cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_fcnn_full.pkl")
+
+all_importances = []
+
+for fold_idx, estimator in enumerate(cv_results["estimator"]):
+    print(f"Processing fold {fold_idx+1}/{len(cv_results['estimator'])}...")
+
+    # Get trained pipeline
+    pipeline = estimator.best_estimator_
+
+    # Get test indices
+    test_idx = cv_results["indices"]["test"][fold_idx]
+    X_test_fold = X.iloc[test_idx].astype(np.float32)
+    y_test_fold = y.iloc[test_idx]
+
+    # Scale features using trained scaler
+    X_input = pipeline.named_steps['scaler'].transform(X_test_fold)
+    X_input = torch.tensor(X_input, dtype=torch.float32)
+
+    # Get PyTorch model
+    torch_model = pipeline.named_steps['classifier'].module_
+    torch_model.eval()
+
+    # Integrated Gradients on logits of class 1
+    def logits_class1(x):
+        return torch_model(x)[:, 1]  # class 1 logit
+
+    ig = IntegratedGradients(logits_class1)
+    attributions, delta = ig.attribute(
+        X_input,
+        target=None,
+        return_convergence_delta=True
+    )
+
+    all_importances.append(attributions.detach().numpy())
+
+# Stack fold-wise attributions
+all_importances = np.vstack(all_importances)
+
+# Feature names
+features = pipeline.named_steps["scaler"].get_feature_names_out()
+
+# Summary DataFrame
+importance_summary = pd.DataFrame({
+    "feature": features,
+    "mean_importance": all_importances.mean(axis=0),
+    "std_importance": all_importances.std(axis=0),
+    "positive_fraction": (all_importances > 0).mean(axis=0),
+    "lower_perc12_5": np.percentile(all_importances, 12.5, axis=0),
+    "upper_perc87_5": np.percentile(all_importances, 87.5, axis=0)
+})
+
+
+
+
+importance_summary = importance_summary.sort_values("mean_importance", ascending=False)
+
+# Save summary to CSV
+importance_summary.to_csv("fcnn_feature_importances_IG.csv", index=False)
+print("Integrated Gradients feature importance summary saved.")
+
+
+
+
+
+
+
+
+
+# combine results into one table
+
+input_dir = Path("/data/local/jy1008/SaMu/results/03032026")
+deseq2_res = pd.read_csv(input_dir / "deseq2_results_sarc_bin.csv")
+deseq2_res = deseq2_res.rename(columns={"Unnamed: 0": "feature"})
+linreg_res = pd.read_csv(input_dir / "lasso_L1_stratifiedkfold_i444_o333_coef_summary.csv")
+linreg_res["feature"] = linreg_res["feature"].str.replace("clr_taxa__", "", regex=False)
+rf_res = pd.read_csv(input_dir / "rf_stratifiedkfold_i444_o333_coef_summary.csv")
+rf_res["feature"] = rf_res["feature"].str.replace("clr_taxa__", "", regex=False)
+# fcnn_res = pd.read_csv(input_dir / "fcnn_stratifiedkfold_i444_o333_coef_summary.csv")
+fcnn_res = pd.read_csv(input_dir / "fcnn_feature_importances_IG.csv")
+fcnn_res["feature"] = fcnn_res["feature"].str.replace("clr_taxa__", "", regex=False)
+
+merged_table = pd.merge(deseq2_res[["feature", "log2FoldChange", "padj"]], 
+                        linreg_res[["feature", "mean_coef", "std_coef",
+                                    "odds_ratio", "nonzero_fraction",
+                                    "lower_perc12_5", "upper_perc87_5"]],
+                        on="feature", how="outer")
+merged_table = merged_table.rename(columns={
+    "log2FoldChange": "deseq2_log2FC",
+    "padj": "deseq2_padj",
+    "mean_coef": "linreg_mean_coef",
+    "std_coef": "linreg_std_coef",
+    "odds_ratio": "linreg_odds_ratio",
+    "nonzero_fraction": "linreg_nonzero_fraction",
+    "lower_perc12_5": "linreg_lower_perc12_5",
+    "upper_perc87_5": "linreg_upper_perc87_5"
+})
+merged_table = pd.merge(merged_table, 
+                        rf_res[["feature", "mean_importance",
+                                "std_importance", "positive_fraction",
+                                "lower_perc12_5", "upper_perc87_5"]],
+                        on="feature", how="outer")
+merged_table = merged_table.rename(columns={
+    "mean_importance": "rf_mean_importance",
+    "std_importance": "rf_std_importance",
+    "positive_fraction": "rf_positive_fraction",
+    "lower_perc12_5": "rf_lower_perc12_5",
+    "upper_perc87_5": "rf_upper_perc87_5"
+})
+merged_table = pd.merge(merged_table, 
+                        fcnn_res[["feature", "mean_importance",
+                                  "std_importance", "positive_fraction",
+                                  "lower_perc12_5", "upper_perc87_5"]],
+                        on="feature", how="outer")
+merged_table = merged_table.rename(columns={
+    "mean_importance": "fcnn_mean_importance",
+    "std_importance": "fcnn_std_importance",
+    "positive_fraction": "fcnn_positive_fraction",
+    "lower_perc12_5": "fcnn_lower_perc12_5",
+    "upper_perc87_5": "fcnn_upper_perc87_5"
+})
+merged_table.to_csv(input_dir / "merged_feature_importance.csv", index=False)
+
+
+# === Old code for running a single L1 logistic regression model without nested CV ===
 """clf = LogisticRegressionCV(
     Cs=10,            # number of regularization strengths to try
     cv=5,             # 5-fold cross-validation

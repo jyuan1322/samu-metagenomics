@@ -11,11 +11,19 @@ library(vegan)
 library(phyloseq)
 library(DESeq2)
 
-input_dir <- "/data/local/jy1008/SaMu/metaphlan_out_09172025/all_merged_fastqs"
+# input_dir <- "/data/local/jy1008/SaMu/metaphlan_out_09172025/all_merged_fastqs"
+input_dir <- "/data/local/jy1008/SaMu/metaphlan_out_02102026/all_merged_fastqs"
+
+# output dir
+setwd("/data/local/jy1008/SaMu/results/02102026")
 
 # metadata
-meta_df <- read.csv("/data/local/jy1008/SaMu/SaMu_sarcopeniestatus_majorcovariates_v11_metadata.csv",
+# meta_df <- read.csv("/data/local/jy1008/SaMu/SaMu_sarcopeniestatus_majorcovariates_v11_metadata.csv",
+#                 header = TRUE, stringsAsFactors = FALSE)
+# 2/10/2026 inclusion of blocks 8 and 9
+meta_df <- read.csv("/data/local/jy1008/SaMu/metadata/SaMu_sarcopeniestatus_majorcovariates_v13_16012026.csv",
                 header = TRUE, stringsAsFactors = FALSE)
+
 # create link to files
 meta_df$File_ID <- NA_character_
 colname <- "block1.20231011_AV224503_4520_1.RawData.4520.tar"
@@ -29,6 +37,10 @@ meta_df$File_ID[nonempty_idx] <- stringr::str_extract(meta_df[[colname]][nonempt
 colname <- "block5.20250124_AV242402_4915_1.RawData.4915.tar"
 nonempty_idx <- trimws(meta_df[[colname]]) != ""
 meta_df$File_ID[nonempty_idx] <- stringr::str_extract(meta_df[[colname]][nonempty_idx], "\\d+_\\d+_\\d+_SaMu\\d+")
+colname <- "block89a.2025024_AV24242_5026_5092_1.RawData.5092"
+nonempty_idx <- trimws(meta_df[[colname]]) != ""
+meta_df$File_ID[nonempty_idx] <- stringr::str_extract(meta_df[[colname]][nonempty_idx], "\\d+_\\d+_Libr\\d+_SaMu\\d+")
+
 meta_df <- meta_df[!is.na(meta_df$File_ID), ]
 rownames(meta_df) <- meta_df$File_ID
 
@@ -125,7 +137,7 @@ ggsave("elbow_plot_species_level_09232025.pdf", plot = p, width = 10, height = 6
 
 
 # Identify species that pass the threshold in at least 20 samples
-threshold = 0.1
+threshold = 0.1 # relative abundance is out of 100, so this is 0.1% or 0.001
 min_samples = 20
 species_keep <- meta_species %>%
   group_by(Species) %>%
@@ -330,12 +342,18 @@ meta_df <- meta_df[, c(
   "alco",
   "nutr_score",
   "bmi",
+  "stvol",
   "File_ID"
 )]
 meta_df$smke <- ifelse(meta_df$smke %in% c("1", "2", "3"), 1,
                        ifelse(meta_df$smke == "0", 0, NA))
 meta_df$alco <- ifelse(meta_df$alco %in% c("1", "2"), 0,
                        ifelse(meta_df$alco %in% c("3", "4"), 1, NA))
+print("Converting sarc_status to numeric, converting non-numeric values to NA")
+meta_df$sarc_status <- as.numeric(meta_df$sarc_status)
+# binarize sarc_status
+meta_df$sarc_status_bin <- ifelse(meta_df$sarc_status > 0, "Sarc", "NoSarc")
+meta_df$sarc_status_bin <- factor(meta_df$sarc_status_bin, levels = c("NoSarc", "Sarc"))
 
 # Run alpha and beta diversity
 otu_mat <- meta_filtered %>%
@@ -365,10 +383,11 @@ sdata <- sample_data(meta_df)
 # Add to existing phyloseq object
 ps <- merge_phyloseq(ps, sdata)
 
-alpha_div <- estimate_richness(ps, measures = "Shannon")
+alpha_div <- estimate_richness(ps, measures = c("Shannon", "Simpson"))
 head(alpha_div)
 
-meta_df$alpha_diversity <- alpha_div[rownames(meta_df), "Shannon"]
+# meta_df$alpha_diversity <- alpha_div[rownames(meta_df), "Shannon"]
+meta_df$alpha_diversity <- alpha_div[rownames(meta_df), "Simpson"]
 
 # add total reads and number of species
 temp <- meta_filtered %>%
@@ -380,9 +399,14 @@ rownames(temp) <- temp$Sample
 meta_df$est_total_reads <- temp[rownames(meta_df), "total_reads"]
 meta_df$num_species <- temp[rownames(meta_df), "num_species"]
 
+# add actual read counts to meta_df
+fastp_read_counts <- read.csv("fastp_read_counts.csv", header = TRUE, stringsAsFactors = FALSE)
+
+meta_df <- merge(meta_df, fastp_read_counts, by.x = "File_ID", by.y = "Sample", all.x = TRUE)
+
 # Does alpha diversity depend on input read count
 meta_df$Block <- factor(meta_df$Block)
-lm_fit <- lm(alpha_diversity ~ est_total_reads, data = meta_df)
+lm_fit <- lm(alpha_diversity ~ InputReads, data = meta_df)
 intercept <- coef(lm_fit)[1]
 slope <- coef(lm_fit)[2]
 r2 <- summary(lm_fit)$r.squared
@@ -400,8 +424,53 @@ p <- ggplot(meta_df, aes(x = est_total_reads, y = alpha_diversity)) +
   theme_minimal()
 ggsave("alpha_div_vs_total_reads_block.pdf", plot = p, width = 6, height = 6, dpi = 300)
 
+# 2/27/2026 alpha diversity with Simpson and fastq input reads
+
+p <- ggplot(meta_df, aes(x = InputReads, y = alpha_diversity)) +
+  geom_point(aes(color = sarc_status_bin), size = 3) +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +   # linear regression line
+  annotate("text", x = max(meta_df$InputReads)*0.6, 
+          y = max(meta_df$alpha_diversity)*0.9, 
+          label = eq_label, color = "black", size = 4) +
+  annotate("text", x = max(meta_df$InputReads)*0.6, 
+           y = max(meta_df$alpha_diversity)*0.85, 
+           label = r2_label, color = "black", size = 4) +
+  theme_minimal()
+ggsave("alpha_div_vs_total_reads_sarc_Simpson.pdf", plot = p, width = 8, height = 6, dpi = 300)
+
+meta_df$sarc_status <- factor(meta_df$sarc_status)
+
+p <- ggplot(meta_df, aes(x = sarc_status_bin, y = alpha_diversity)) +
+  geom_boxplot(aes(fill = sarc_status_bin),
+               outlier.shape = NA,
+               alpha = 0.7) +
+  geom_jitter(width = 0.2,
+              alpha = 0.6,
+              size = 2) +
+  theme_minimal() +
+  labs(x = "Sarcopenia Status",
+       y = "alpha diversity")
+ggsave("alpha_diversity_by_sarc_status_bin_Simpson.pdf", plot = p, width = 6, height = 6, dpi = 300)
+p <- ggplot(meta_df, aes(x = sarc_status, y = alpha_diversity)) +
+  geom_boxplot(aes(fill = sarc_status),
+               outlier.shape = NA,
+               alpha = 0.7) +
+  geom_jitter(width = 0.2,
+              alpha = 0.6,
+              size = 2) +
+  theme_minimal() +
+  labs(x = "Sarcopenia Status",
+       y = "alpha diversity")
+ggsave("alpha_diversity_by_sarc_status_num_Simpson.pdf", plot = p, width = 6, height = 6, dpi = 300)
+write.csv(meta_df, "metadata_with_alpha_diversity.csv", row.names = FALSE)
+library(rstatix)
+alpha_div_sarc_wilcox <- meta_df %>%
+  wilcox_test(alpha_diversity ~ sarc_status, ref.group = "0") %>%
+  adjust_pvalue(method = "BH")
+write.csv(alpha_div_sarc_wilcox, "alpha_diversity_sarc_status_wilcox.csv", row.names = FALSE)
+
 p <- ggplot(meta_df, aes(x = est_total_reads, y = alpha_diversity)) +
-  geom_point(aes(color = sarc_status), size = 3) +
+  geom_point(aes(color = EWGSOP_performance), size = 3) +
   geom_smooth(method = "lm", se = TRUE, color = "black") +   # linear regression line
   annotate("text", x = max(meta_df$est_total_reads)*0.6, 
           y = max(meta_df$alpha_diversity)*0.9, 
@@ -410,7 +479,6 @@ p <- ggplot(meta_df, aes(x = est_total_reads, y = alpha_diversity)) +
            y = max(meta_df$alpha_diversity)*0.85, 
            label = r2_label, color = "black", size = 4) +
   theme_minimal()
-ggsave("alpha_div_vs_total_reads_sarc.pdf", plot = p, width = 6, height = 6, dpi = 300)
 
 lm_fit <- lm(num_species ~ est_total_reads, data = meta_df)
 intercept <- coef(lm_fit)[1]
@@ -522,6 +590,8 @@ adonis_res
 
 
 # DESeq2
+meta_df$sarc_status <- as.numeric(meta_df$sarc_status)
+meta_df$age_def <- as.numeric(meta_df$age_def)
 meta_df$age_def_scaled <- (meta_df$age_def - mean(meta_df$age_def, na.rm = TRUE)) / sd(meta_df$age_def, na.rm = TRUE)
 meta_df$nutr_score <- as.numeric(meta_df$nutr_score)
 meta_df$nutr_score_scaled <- (meta_df$nutr_score - mean(meta_df$nutr_score, na.rm = TRUE)) / sd(meta_df$nutr_score, na.rm = TRUE)
@@ -581,6 +651,10 @@ dds <- DESeq(dds)
 res <- lfcShrink(dds, coef = "sarc_status_bin_Sarc_vs_NoSarc", type = "apeglm")  # or "ashr" or "normal"
 res_df <- as.data.frame(res)
 write.csv(res_df, "deseq2_results_sarc_bin.csv", row.names = TRUE)
+
+# save the dds object
+saveRDS(dds, "deseq2_dds_sarc_bin.rds")
+
 
 # Get mean relative abundances in control group (NoSarc) instead of basemean
 # Convert counts to relative abundances
