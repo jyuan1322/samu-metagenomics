@@ -2,6 +2,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from pathlib import Path
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -16,9 +17,23 @@ from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, Gradien
 # for neural net
 from fcnn_wrapper import *
 
-meta_filtered = pd.read_csv("meta_filtered.csv")
-meta_df = pd.read_csv("meta_df_FullSaMu.csv")
-nmr_df = pd.read_csv("nmr_quorum_FullSaMu.csv")
+log_transform_nmr = False
+
+input_dir = Path("/data/local/jy1008/SaMu/results/02102026")
+nmr_dir = Path("/data/local/jy1008/SaMu/metadata")
+
+meta_filtered = pd.read_csv(input_dir / "meta_filtered.csv")
+meta_df = pd.read_csv(input_dir / "meta_df_FullSaMu.csv")
+nmr_df = pd.read_csv( nmr_dir / "20251027_SaMu_NMR_ureum_creat_v10.csv")
+
+nmr_df = pd.merge(nmr_df, meta_df[['record_id', 'File_ID']], on='record_id', how='left')
+
+# replace UNK_E_1 with 0
+nmr_df = nmr_df.replace("UNK_E_1", "0")
+
+# meta_filtered = pd.read_csv("meta_filtered.csv")
+# meta_df = pd.read_csv("meta_df_FullSaMu.csv")
+# nmr_df = pd.read_csv("nmr_quorum_FullSaMu.csv")
 
 print(meta_filtered.head())
 print(meta_filtered.info())
@@ -27,6 +42,7 @@ print(meta_df.info())
 
 # remove samples who have Full.SaMu == 0
 meta_df = meta_df[(meta_df['Full.SaMu'] == 1)]
+meta_df = meta_df.copy()
 
 # binarize sarc_status for lasso logistic regression
 meta_df["sarc_status_bin"] = (meta_df["sarc_status"] > 0).astype(int)
@@ -50,8 +66,8 @@ X_clr = np.log(X_clr.div(geometric_mean, axis=0))
 # meta_cov = meta_df.set_index('File_ID')[['age_def_scaled', 'sex', 'smke', 'alco',
 #                                          'nutr_score_scaled', 'bmi_scaled', 'sarc_status_bin']]
 meta_cov = meta_df.set_index('File_ID')[['age_def', 'sex', 'smke', 'alco',
-                                         'nutr_score', 'bmi', 'sarc_status_bin']]
-continuous_cols = ['age_def', 'nutr_score', 'bmi']
+                                         'nutr_score', 'bmi', 'stvol', 'sarc_status_bin']]
+continuous_cols = ['age_def', 'nutr_score', 'bmi', 'stvol']
 binary_cols = ['sex', 'smke', 'alco']
 
 # drop young control samples
@@ -75,12 +91,14 @@ nmr_df = nmr_df.set_index('File_ID')
 common_samples = X.index.intersection(nmr_df.index)
 # grab the metabolite columns only, and remove high-NA ones
 all_cols = nmr_df.columns
-start_col = 'X5.Aminopentanoate'
+# start_col = 'X5.Aminopentanoate'
+start_col = '5-Aminopentanoate'
 end_col = 'Valine'
 start_idx = all_cols.get_loc(start_col)
 end_idx = all_cols.get_loc(end_col)
 nmr_cols = all_cols[start_idx:end_idx + 1]  # +1 because slicing is exclusive at the end
-to_remove = ["Glucose", "Galactose", "Urea", "Cadaverine"]
+# to_remove = ["Glucose", "Galactose", "Urea", "Cadaverine"]
+to_remove = ["Glucose", "Galactose"]
 nmr_cols = [x for x in nmr_cols if x not in to_remove]
 nmr_df_sub = nmr_df.loc[common_samples, nmr_cols]
 # log relative abundance
@@ -90,17 +108,25 @@ nmr_df_sub = nmr_df_sub.apply(pd.to_numeric, errors='coerce')
 nmr_df_sub = nmr_df_sub.fillna(0)
 # remove rows whose sums are 0
 nmr_df_sub = nmr_df_sub[nmr_df_sub.sum(axis=1) > 0]
+
+# 2/11/2026 DON'T compute relative abundance
 # Compute relative abundance
-row_sums = nmr_df_sub.sum(axis=1)
-nmr_relabund = nmr_df_sub.div(row_sums, axis=0)
+# row_sums = nmr_df_sub.sum(axis=1)
+# nmr_relabund = nmr_df_sub.div(row_sums, axis=0)
+
 # log-transform
-eps = 1e-6
-nmr_logrel = np.log10(nmr_relabund + eps)
-common_samples = X.index.intersection(nmr_logrel.index)
+if log_transform_nmr:
+    eps = 1e-6
+    # nmr_logrel = np.log10(nmr_relabund + eps)
+    nmr_logrel = np.log10(nmr_df_sub + eps)
+    common_samples = X.index.intersection(nmr_logrel.index)
 
-X = pd.concat([X.loc[common_samples],
-               nmr_logrel.loc[common_samples, nmr_cols]], axis=1)
-
+    X = pd.concat([X.loc[common_samples],
+                nmr_logrel.loc[common_samples, nmr_cols]], axis=1)
+else:
+    common_samples = X.index.intersection(nmr_df_sub.index)
+    X = pd.concat([X.loc[common_samples],
+                nmr_df_sub.loc[common_samples, nmr_cols]], axis=1)
 
 y = meta_df.set_index('File_ID').loc[common_samples, 'sarc_status_bin']
 y = (y > 0).astype(int)
@@ -420,6 +446,26 @@ run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg",
                           nmr_cols=None,
                           outfile_cv="cv_results_l1logreg_no_nmr_clinical_only_repkfold.pkl")
 
+
+# === Running random forest ===
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
+                          continuous_cols=continuous_cols,
+                          binary_cols=binary_cols,
+                          clr_taxa_cols=taxa_cols,
+                          nmr_cols=nmr_cols,
+                          outfile_cv="cv_results_rf_nmr_and_taxa_full_repkfold.pkl")
+
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_rf_taxa_only.pkl")
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_rf_clinical_only.pkl")
+
+run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", 
+                          continuous_cols=continuous_cols,
+                          binary_cols=binary_cols,
+                          clr_taxa_cols=taxa_cols,
+                          nmr_cols=nmr_cols,
+                          outfile_cv="cv_results_l1logreg_nmr_and_taxa_full_repkfold.pkl")
+
+
 """
 # all predictors
 run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_l1logreg_full.pkl")
@@ -454,7 +500,8 @@ run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn", continuous_cols=continu
 # extract summary stats
 # cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/cv_results_full_5fstratCV_iseed444_oseed333_Cm2_1.pkl")
 # cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/12182025/cv_results_l1logreg_nmr_and_covars_only_repkfold.pkl")
-cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/12182025/cv_results_l1logreg_nmr_and_taxa_full_repkfold.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/12182025/cv_results_l1logreg_nmr_and_taxa_full_repkfold.pkl")
+cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/02102026/ml_models_taxa_and_log_nmr/cv_results_l1logreg_nmr_only_repkfold.pkl")
 for i, estimator in enumerate(cv_results["estimator"], 1):
     best_model = estimator.best_estimator_  # the pipeline with tuned C
     logreg = best_model.named_steps["classifier"]
@@ -485,7 +532,11 @@ coef_summary["odds_ratio"] = np.exp(coef_summary["mean_coef"])
 coef_summary.sort_values("nonzero_fraction", ascending=False).head(20)
 # coef_summary.to_csv("lasso_L1_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
 # coef_summary.to_csv("lasso_L1_stratifiedkfold_nmr_and_covars_only_i444_o333_repkfold_coef_summary.csv", index=False)
-coef_summary.to_csv("lasso_L1_stratifiedkfold_nmr_and_taxa_full_i444_o333_repkfold_coef_summary.csv", index=False)
+# coef_summary.to_csv("lasso_L1_stratifiedkfold_nmr_and_taxa_full_i444_o333_repkfold_coef_summary.csv", index=False)
+coef_summary.to_csv("lasso_L1_stratifiedkfold_nmr_only_nolog_i444_o333_repkfold_coef_summary.csv", index=False)
+
+# run this if NMR only instead of the mask below
+# coef_summary["plot_label"] = coef_summary["feature"].str.replace("nmr__", "")
 
 # Extract genus and species into label for taxonomic rows
 
@@ -543,7 +594,8 @@ plt.title("Feature Nonzero Fraction vs Odds Ratio")
 plt.tight_layout()
 # plt.savefig("lasso_L1_stratifiedkfold_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
 # plt.savefig("lasso_L1_stratifiedkfold_nmr_and_covars_only_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
-plt.savefig("lasso_L1_stratifiedkfold_nmr_and_taxa_full_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
+# plt.savefig("lasso_L1_stratifiedkfold_nmr_and_taxa_full_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
+plt.savefig("lasso_L1_stratifiedkfold_nmr_only_nolog_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
 plt.show()
 
 
