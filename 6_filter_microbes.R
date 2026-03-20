@@ -15,7 +15,7 @@ library(DESeq2)
 input_dir <- "/data/local/jy1008/SaMu/metaphlan_out_02102026/all_merged_fastqs"
 
 # output dir
-setwd("/data/local/jy1008/SaMu/results/02102026")
+setwd("/data/local/jy1008/SaMu/results/latest/metagenomics_R")
 
 # metadata
 # meta_df <- read.csv("/data/local/jy1008/SaMu/SaMu_sarcopeniestatus_majorcovariates_v11_metadata.csv",
@@ -40,12 +40,21 @@ meta_df$File_ID[nonempty_idx] <- stringr::str_extract(meta_df[[colname]][nonempt
 colname <- "block89a.2025024_AV24242_5026_5092_1.RawData.5092"
 nonempty_idx <- trimws(meta_df[[colname]]) != ""
 meta_df$File_ID[nonempty_idx] <- stringr::str_extract(meta_df[[colname]][nonempty_idx], "\\d+_\\d+_Libr\\d+_SaMu\\d+")
+# switch to using the record ID instead of the file name (which has different formats)
+rownames(meta_df) <- meta_df$record_id
 
+meta_df <- meta_df %>%
+  filter(Full.SaMu == 1)
+
+write.csv(meta_df, "SaMu_sarcopeniestatus_majorcovariates_v13_16012026_FullSaMu_only.csv", row.names = FALSE)
+
+# one sample is missing metagenomics, but present for other assays
 meta_df <- meta_df[!is.na(meta_df$File_ID), ]
-rownames(meta_df) <- meta_df$File_ID
 
 # List all MetaPhlAn output files
 files <- list.files(input_dir, pattern = "_profile.txt$", full.names = TRUE)
+# keep only files for subjects with FullSaMu = 1
+files <- files[basename(files) %in% paste0(meta_df$File_ID, "_profile.txt")]
 
 # Function to read one MetaPhlAn file
 read_metaphlan <- function(file) {
@@ -99,12 +108,15 @@ print(temp)
 # Elbow plot
 # Define a sequence of abundance thresholds, e.g., 0% to 1%
 abundance_thresholds <- seq(0, 2, by = 0.02)  # 0% to 2%
-prevalence_thresholds <- c(1, 5, 10, 20)  # number of samples a species must appear in
+# MMethane/MITRE: taxa with counts below (above?) 10 in less than 10% of subjects were removed.
+count_thresholds <- c(1, 5, 10, 20)
+# total_num_samples <- length(unique(meta_species$Sample))
+# prevalence_thresholds <- ceiling(c(.01, 0.05, 0.10, 0.20) * total_num_samples)  # percentage of samples a species must appear in
 
 # Build elbow data for multiple prevalence thresholds
 elbow_df <- expand_grid(
   threshold = abundance_thresholds,
-  min_samples = prevalence_thresholds
+  min_samples = count_thresholds
 ) %>%
   mutate(
     CladesRetained = map2_int(threshold, min_samples, ~ {
@@ -119,17 +131,18 @@ elbow_df <- expand_grid(
 # Plot multiple lines
 p <- ggplot(elbow_df, aes(x = threshold, y = CladesRetained, color = factor(min_samples))) +
   geom_line(size = 1.2) +
-  scale_x_continuous(
-    breaks = seq(0, 2, by = 0.1)
-  ) +
+  # scale_x_continuous(
+  #   breaks = seq(0, 2, by = 0.1)
+  # ) +
   theme_minimal() +
   labs(
-    x = "Relative Abundance Threshold (%)",
+    x = "MetaPhlAn Estimated Counts Threshold (%)",
     y = "Number of Species Passing Filter",
     color = "Min Samples Passing Threshold",
     title = "Elbow Plot for Abundance Filtering"
   )
-ggsave("elbow_plot_species_level_09232025.pdf", plot = p, width = 10, height = 6)
+ggsave("elbow_plot_species_level_03192026.pdf", plot = p, width = 10, height = 6)
+ggsave("elbow_plot_species_level_03192026.png", plot = p, width = 10, height = 6, dpi = 300)
 
 
 # ----------
