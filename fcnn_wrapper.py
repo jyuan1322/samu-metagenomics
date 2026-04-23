@@ -43,7 +43,7 @@ def make_ffnn_classifier(input_dim, h=[18, 12], p=0.2, lr=0.001, weight_decay=0.
         batch_size=32,
         iterator_train__shuffle=True,
         train_split=None,  # disable internal validation; outer CV handles it
-        verbose=2,
+        verbose=0,
         device='cpu',       # or 'cuda' when GPU ready
         criterion=torch.nn.CrossEntropyLoss
     )

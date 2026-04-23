@@ -16,70 +16,84 @@ from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, Gradien
 # for neural net
 from fcnn_wrapper import *
 
-input_dir = Path("/data/local/jy1008/SaMu/results/02102026")
-meta_filtered = pd.read_csv(input_dir / "meta_filtered.csv")
-meta_df = pd.read_csv(input_dir / "meta_df_FullSaMu.csv")
+# input_dir = Path("/data/local/jy1008/SaMu/results/02102026")
+input_dir = Path("/data/local/jy1008/SaMu/results/latest/metagenomics_R")
+output_dir = Path("/data/local/jy1008/SaMu/results/latest/metagenomics_ml")
+meta_filtered = pd.read_csv(input_dir / "meta_filtered_03132026.csv")
+meta_df = pd.read_csv(input_dir / "meta_df_FullSaMu_03132026.csv")
+
 
 print(meta_filtered.head())
 print(meta_filtered.info())
 print(meta_df.head())
 print(meta_df.info())
 
-# remove samples who have Full.SaMu == 0
-meta_df = meta_df[(meta_df['Full.SaMu'] == 1)]
-meta_df = meta_df.copy()
+def prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6):
+    # remove samples who have Full.SaMu == 0
+    meta_df = meta_df[(meta_df['Full.SaMu'] == 1)]
+    meta_df = meta_df.copy()
 
-# binarize sarc_status for lasso logistic regression
-meta_df["sarc_status_bin"] = (meta_df["sarc_status"] > 0).astype(int)
+    # binarize sarc_status for lasso logistic regression
+    meta_df["sarc_status_bin"] = (meta_df["sarc_status"] > 0).astype(int)
 
-# Pivot to wide: rows = samples, columns = species
-X_microbiome = meta_filtered.pivot_table(
-    index='Sample',
-    columns='Species',
-    values='relative_abundance',
-    fill_value=0  # species not present to 0
-)
-# CLR transform the relative abundances
-# Replace zeros with a small pseudo-count to avoid log(0)
-X_clr = X_microbiome.replace(0, 1e-6)
-# Compute geometric mean per sample (row)
-geometric_mean = np.exp(np.log(X_clr).mean(axis=1))
-# CLR transform: log(x / gm)
-X_clr = np.log(X_clr.div(geometric_mean, axis=0))
+    # File_ID matches Sample
+    # meta_cov = meta_df.set_index('File_ID')[['age_def_scaled', 'sex', 'smke', 'alco',
+    #                                          'nutr_score_scaled', 'bmi_scaled', 'sarc_status_bin']]
+    meta_cov = meta_df.set_index('File_ID')[['age_def', 'sex', 'smke', 'alco',
+                                            'nutr_score', 'bmi', 'sarc_status_bin']]
+    continuous_cols = ['age_def', 'nutr_score', 'bmi']
+    binary_cols = ['sex', 'smke', 'alco']
 
-# File_ID matches Sample
-# meta_cov = meta_df.set_index('File_ID')[['age_def_scaled', 'sex', 'smke', 'alco',
-#                                          'nutr_score_scaled', 'bmi_scaled', 'sarc_status_bin']]
-meta_cov = meta_df.set_index('File_ID')[['age_def', 'sex', 'smke', 'alco',
-                                         'nutr_score', 'bmi', 'sarc_status_bin']]
-continuous_cols = ['age_def', 'nutr_score', 'bmi']
-binary_cols = ['sex', 'smke', 'alco']
+    # drop young control samples
+    meta_cov = meta_cov[~(meta_cov['age_def'] < 50)]
+    meta_cov["sex"] = meta_cov["sex"].map({"M": 0, "F": 1})
+    # drop NA rows from covariates
+    meta_cov_clean = meta_cov.dropna()
 
-# drop young control samples
-meta_cov = meta_cov[~(meta_cov['age_def'] < 50)]
+    # Pivot to wide: rows = samples, columns = species
+    X_microbiome = meta_filtered.pivot_table(
+        index='Sample',
+        columns='Species',
+        values='relative_abundance',
+        fill_value=0  # species not present to 0
+    )
+    if clr_transform:
+        # CLR transform the relative abundances
+        # add a small pseudo-count to avoid log(0)
+        X_clr = X_microbiome + pseudo_count
+        X_clr = X_clr.div(X_clr.sum(axis=1), axis=0)
+        # Compute geometric mean per sample (row)
+        geometric_mean = np.exp(np.log(X_clr).mean(axis=1))
+        # CLR transform: log(x / gm)
+        X_clr = np.log(X_clr.div(geometric_mean, axis=0))
 
-# keep only males (for testing stratification in data, and highly variable AUCs)
-# meta_cov = meta_cov[(meta_cov['sex'] == 1)]
+        # unify samples between X and y and drop NA values
+        # check there are no NAs in the matrix
+        assert(X_clr.shape[0] == X_clr.dropna().shape[0])
 
-# unify samples between X and y and drop NA values
-# check there are no NAs in the matrix
-assert(X_clr.shape[0] == X_clr.dropna().shape[0])
-# drop NA rows from covariates
-meta_cov_clean = meta_cov.dropna()
+        # align samples
+        common_samples = X_clr.index.intersection(meta_cov_clean.index)
+        X = pd.concat([X_clr.loc[common_samples],
+                    meta_cov_clean.loc[common_samples]], axis=1)
+    else:
+        # log transform only
+        X_log = np.log(X_microbiome + pseudo_count)
+        assert(X_log.shape[0] == X_log.dropna().shape[0])
+        common_samples = X_log.index.intersection(meta_cov_clean.index)
+        X = pd.concat([X_log.loc[common_samples],
+                    meta_cov_clean.loc[common_samples]], axis=1)
 
-# align samples
-common_samples = X_clr.index.intersection(meta_cov_clean.index)
-X = pd.concat([X_clr.loc[common_samples],
-               meta_cov_clean.loc[common_samples]], axis=1)
 
-y = meta_df.set_index('File_ID').loc[common_samples, 'sarc_status_bin']
-y = (y > 0).astype(int)
+    y = meta_df.set_index('File_ID').loc[common_samples, 'sarc_status_bin']
+    y = (y > 0).astype(int)
 
-# After NA removal, make sure sarc_status_bin is not in X
-if 'sarc_status_bin' in X.columns:
-    X = X.drop(columns='sarc_status_bin')
+    # After NA removal, make sure sarc_status_bin is not in X
+    if 'sarc_status_bin' in X.columns:
+        X = X.drop(columns='sarc_status_bin')
 
-assert 'sarc_status_bin' not in X.columns
+    assert 'sarc_status_bin' not in X.columns
+
+    return X, y, continuous_cols, binary_cols
 
 # regress X and y on the following
 # - full model
@@ -92,7 +106,8 @@ def run_lasso_logreg_pipeline(
         continuous_cols=None,
         binary_cols=None,
         clr_taxa_cols=None,
-        outfile_cv="cv_results.pkl"):
+        outfile_cv="cv_results.pkl",
+        outfile_roc_curve="roc_curve.pdf"):
     # col_scaler = ColumnTransformer(
     #     transformers=[
     #         ('cont', StandardScaler(), continuous_cols),
@@ -238,12 +253,12 @@ def run_lasso_logreg_pipeline(
     # Outer loop: 5-fold CV
     # NOTE: in practice, I found that performance improved when I set C range to [-2, 1] instead of [-3, 3]
     # outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=111)
-    outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=333)
+    # outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=333)
 
-    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=111)
-    # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=222)
+    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=222)
+    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=111)
     # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=333)
-    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=444)
+    # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=444)
     # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=101)
     # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=202)
     # outer_cv = KFold(n_splits=5, shuffle=True, random_state=101)
@@ -349,46 +364,91 @@ def run_lasso_logreg_pipeline(
         title=f"Mean ROC curve",
     )
     ax.legend(loc="lower right")
+    plt.savefig(outfile_roc_curve, format="pdf", bbox_inches="tight")
     plt.show()
 
+
+
+X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6)
 # taxa are already CLR transformed
 taxa_cols = [col for col in X.columns.tolist() if isinstance(col, str) and col.startswith("k__Bacteria")]
 clinical_cols = [col for col in X.columns.tolist() if isinstance(col, str) and not col.startswith("k__Bacteria")]
 
 # all predictors
-run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_l1logreg_full.pkl")
+run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg",
+                          continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols,
+                          outfile_cv=output_dir / "cv_results_l1logreg_full.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_l1logreg_full.pdf")
 
 # only taxonomic predictors
 # X_taxon = X[taxa_cols]
-run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_l1logreg_taxa_only.pkl")
+run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg",
+                          continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols,
+                          outfile_cv=output_dir / "cv_results_l1logreg_taxa_only.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_l1logreg_taxa_only.pdf")
 
 # only clinical covariates
 # X_clinical = X[clinical_cols]
-run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_l1logreg_clinical_only.pkl")
+run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg",
+                          continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None,
+                          outfile_cv=output_dir / "cv_results_l1logreg_clinical_only.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_l1logreg_clinical_only.pdf")
 
 # === Running random forest ===
-run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_rf_full.pkl")
-run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_rf_taxa_only.pkl")
-run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_rf_clinical_only.pkl")
+X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=False, pseudo_count=1e-6)
+# taxa are already CLR transformed
+taxa_cols = [col for col in X.columns.tolist() if isinstance(col, str) and col.startswith("k__Bacteria")]
+clinical_cols = [col for col in X.columns.tolist() if isinstance(col, str) and not col.startswith("k__Bacteria")]
+
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
+                          continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols,
+                          outfile_cv=output_dir / "cv_results_rf_full.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_rf_full.pdf")
+
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
+                          continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols,
+                          outfile_cv=output_dir / "cv_results_rf_taxa_only.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_rf_taxa_only.pdf")
+
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
+                          continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None,
+                          outfile_cv=output_dir / "cv_results_rf_clinical_only.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_rf_clinical_only.pdf")
 
 # === Running Adaboost ===
-run_lasso_logreg_pipeline(X=X, y=y, model_type="adaboost", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_ada_full.pkl")
-run_lasso_logreg_pipeline(X=X, y=y, model_type="adaboost", continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_ada_taxa_only.pkl")
-run_lasso_logreg_pipeline(X=X, y=y, model_type="adaboost", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_ada_clinical_only.pkl")
+# run_lasso_logreg_pipeline(X=X, y=y, model_type="adaboost", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_ada_full.pkl")
+# run_lasso_logreg_pipeline(X=X, y=y, model_type="adaboost", continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_ada_taxa_only.pkl")
+# run_lasso_logreg_pipeline(X=X, y=y, model_type="adaboost", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_ada_clinical_only.pkl")
 
 # === Running FC_NN pytorch neural net ===
-Xft = X.astype(np.float32)
-run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_fcnn_full.pkl")
-run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn", continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols, outfile_cv="cv_results_fcnn_taxa_only.pkl")
-run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_fcnn_clinical_only.pkl")
+X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6)
+# taxa are already CLR transformed
+taxa_cols = [col for col in X.columns.tolist() if isinstance(col, str) and col.startswith("k__Bacteria")]
+clinical_cols = [col for col in X.columns.tolist() if isinstance(col, str) and not col.startswith("k__Bacteria")]
 
+Xft = X.astype(np.float32)
+run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn",
+                          continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols,
+                          outfile_cv=output_dir / "cv_results_fcnn_full.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_fcnn_full.pdf")
+
+run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn",
+                          continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols,
+                          outfile_cv=output_dir / "cv_results_fcnn_taxa_only.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_fcnn_taxa_only.pdf")
+
+run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn",
+                          continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None,
+                          outfile_cv=output_dir / "cv_results_fcnn_clinical_only.pkl",
+                          outfile_roc_curve=output_dir / "roc_curve_fcnn_clinical_only.pdf")
 
 
 
 # extract summary stats
 # cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/cv_results_full_5fstratCV_iseed444_oseed333_Cm2_1.pkl")
 # cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/cv_results_l1logreg_full.pkl")
-cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/02102026/ml_models_taxa_only/cv_results_l1logreg_full.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/02102026/ml_models_taxa_only/cv_results_l1logreg_full.pkl")
+cv_results = pd.read_pickle(output_dir / "cv_results_l1logreg_full.pkl")
 for i, estimator in enumerate(cv_results["estimator"], 1):
     best_model = estimator.best_estimator_  # the pipeline with tuned C
     logreg = best_model.named_steps["classifier"]
@@ -419,7 +479,9 @@ coef_summary = pd.DataFrame({
 })
 coef_summary["odds_ratio"] = np.exp(coef_summary["mean_coef"])
 coef_summary.sort_values("nonzero_fraction", ascending=False).head(20)
-coef_summary.to_csv("lasso_L1_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
+# coef_summary.to_csv("lasso_L1_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
+coef_summary.to_csv(output_dir / "lasso_L1_stratifiedkfold_i111_o222_coef_summary.csv", index=False)
+
 
 # Extract genus and species into label for taxonomic rows
 mask = coef_summary["feature"].str.contains(r"g__.*\|s__", na=False)
@@ -434,6 +496,7 @@ coef_summary.loc[mask, "genus_species"] = (
 )
 coef_summary["plot_label"] = coef_summary["genus_species"]
 coef_summary.loc[coef_summary["nonzero_fraction"] < 0.2, "plot_label"] = ""
+
 # top_features = coef_summary.loc[coef_summary.nonzero_fraction > 0.3]
 # top_features = top_features.sort_values("mean_coef")
 
@@ -470,7 +533,7 @@ plt.xlabel("Odds Ratio")
 plt.ylabel("Nonzero Fraction")
 plt.title("Feature Nonzero Fraction vs Odds Ratio")
 plt.tight_layout()
-plt.savefig("lasso_L1_stratifiedkfold_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
+plt.savefig(output_dir / "lasso_L1_stratifiedkfold_i444_o333_OR_vs_nonzero_fraction.pdf", format="pdf", bbox_inches="tight")
 plt.show()
 
 
@@ -481,7 +544,10 @@ plt.show()
 # Read the DESeq2 results file
 # deseq2_df = pd.read_csv("output/deseq2_results.csv", index_col=0)
 # deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/scripts/samu-metagenomics/output/10062025/deseq2_results_sarc_bin.csv", index_col=0)
-deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/results/02102026/deseq2_results_sarc_bin.csv", index_col=0)
+# deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/results/02102026/deseq2_results_sarc_bin.csv", index_col=0)
+# deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/results/0314/deseq2_results_sarc_bin_03132026.csv", index_col=0)
+"""
+deseq2_df = pd.read_csv("/data/local/jy1008/SaMu/results/latest/metagenomics_R/deseq2_results_sarc_bin_03132026.csv", index_col=0)
 
 # Read L1 logistic regression coefficients
 # (from your coef_summary DataFrame)
@@ -509,6 +575,7 @@ y = sig_merged["log2FoldChange"].values
 labels = sig_merged["genus_species"].values
 
 # Scatter plot
+
 plt.figure(figsize=(8,6))
 plt.scatter(x, y, alpha=0.7)
 
@@ -543,7 +610,7 @@ plt.savefig("lasso_L1_stratifiedkfold_i444_o333_vs_deseq2_effects.pdf", format="
 plt.show()
 
 sig_merged.to_csv("lasso_L1_stratifiedkfold_i444_vs_deseq2_effects.csv", index=False)
-
+"""
 
 
 
@@ -562,10 +629,12 @@ sig_merged.to_csv("lasso_L1_stratifiedkfold_i444_vs_deseq2_effects.csv", index=F
 # -- FCNN: average integrated gradients using Captum (v0.7.0)
 
 # feature importance for random forest
-cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_rf_full.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_rf_full.pkl")
+"""
+cv_results = pd.read_pickle(output_dir / "cv_results_rf_full.pkl")
+
 
 # from sklearn.inspection import permutation_importance
-
 
 importances = []
 
@@ -591,7 +660,9 @@ importance_summary = pd.DataFrame({
     "upper_perc87_5": np.percentile(importances, 87.5, axis=0)
 })
 importance_summary.sort_values("mean_importance", ascending=False).head(20)
-importance_summary.to_csv("rf_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
+# importance_summary.to_csv("rf_stratifiedkfold_i444_o333_coef_summary.csv", index=False)
+importance_summary.to_csv("rf_stratifiedkfold_i111_o222_coef_summary.csv", index=False)
+"""
 
 ### Boruta version
 """
@@ -617,7 +688,9 @@ for estimator in cv_results["estimator"]:
     selected_features = X.columns[boruta.support_]
 """
 # cv_results = pd.read_pickle("/data/local/jy1008/SaMu/scripts/samu-metagenomics/cv_results_rf_full.pkl")
-cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_rf_full.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_rf_full.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03112026/ml_models_taxa_only/cv_results_rf_full.pkl")
+cv_results = pd.read_pickle(output_dir / "cv_results_rf_full.pkl")
 
 np.int = int
 np.float = float
@@ -681,7 +754,7 @@ boruta_summary = boruta_summary.sort_values(
 )
 
 boruta_summary.head(20)
-boruta_summary.to_csv("rf_feature_importances_Boruta_50repkfold.csv", index=False)
+boruta_summary.to_csv(output_dir / "rf_feature_importances_Boruta_5stratkfold.csv", index=False)
 # boruta_summary.to_csv("rf_feature_importances_Boruta_5fold.csv", index=False)
 
 
@@ -734,7 +807,9 @@ import torch
 from captum.attr import IntegratedGradients
 
 # Load CV results
-cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_fcnn_full.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03032026/cv_results_fcnn_full.pkl")
+# cv_results = pd.read_pickle("/data/local/jy1008/SaMu/results/03112026/ml_models_taxa_only/cv_results_fcnn_full.pkl")
+cv_results = pd.read_pickle(output_dir / "cv_results_fcnn_full.pkl")
 
 all_importances = []
 
@@ -792,7 +867,7 @@ importance_summary = pd.DataFrame({
 importance_summary = importance_summary.sort_values("mean_importance", ascending=False)
 
 # Save summary to CSV
-importance_summary.to_csv("fcnn_feature_importances_IG.csv", index=False)
+importance_summary.to_csv(output_dir / "fcnn_feature_importances_IG.csv", index=False)
 print("Integrated Gradients feature importance summary saved.")
 
 
@@ -805,15 +880,23 @@ print("Integrated Gradients feature importance summary saved.")
 
 # combine results into one table
 
-input_dir = Path("/data/local/jy1008/SaMu/results/03032026")
-deseq2_res = pd.read_csv(input_dir / "deseq2_results_sarc_bin.csv")
+# input_dir = Path("/data/local/jy1008/SaMu/results/03032026")
+# input_dir = Path("/data/local/jy1008/SaMu/results/03112026/ml_models_taxa_only")
+# deseq2_res = pd.read_csv(input_dir / "deseq2_results_sarc_bin.csv")
+# deseq2_res = pd.read_csv("/data/local/jy1008/SaMu/results/03142026/deseq2_results_sarc_bin_03132026.csv")
+deseq2_res = pd.read_csv("/data/local/jy1008/SaMu/results/latest/metagenomics_R/deseq2_results_sarc_bin_03132026.csv")
 deseq2_res = deseq2_res.rename(columns={"Unnamed: 0": "feature"})
-linreg_res = pd.read_csv(input_dir / "lasso_L1_stratifiedkfold_i444_o333_coef_summary.csv")
+# linreg_res = pd.read_csv(input_dir / "lasso_L1_stratifiedkfold_i444_o333_coef_summary.csv")
+# linreg_res = pd.read_csv(input_dir / "lasso_L1_stratifiedkfold_i111_o222_coef_summary.csv")
+linreg_res = pd.read_csv(output_dir / "lasso_L1_stratifiedkfold_i111_o222_coef_summary.csv")
 linreg_res["feature"] = linreg_res["feature"].str.replace("clr_taxa__", "", regex=False)
-rf_res = pd.read_csv(input_dir / "rf_stratifiedkfold_i444_o333_coef_summary.csv")
+# rf_res = pd.read_csv(input_dir / "rf_stratifiedkfold_i444_o333_coef_summary.csv")
+# rf_res = pd.read_csv(input_dir / "rf_feature_importances_Boruta_5stratkfold.csv")
+rf_res = pd.read_csv(output_dir / "rf_feature_importances_Boruta_5stratkfold.csv")
 rf_res["feature"] = rf_res["feature"].str.replace("clr_taxa__", "", regex=False)
 # fcnn_res = pd.read_csv(input_dir / "fcnn_stratifiedkfold_i444_o333_coef_summary.csv")
-fcnn_res = pd.read_csv(input_dir / "fcnn_feature_importances_IG.csv")
+# fcnn_res = pd.read_csv(input_dir / "fcnn_feature_importances_IG.csv")
+fcnn_res = pd.read_csv(output_dir / "fcnn_feature_importances_IG.csv")
 fcnn_res["feature"] = fcnn_res["feature"].str.replace("clr_taxa__", "", regex=False)
 
 merged_table = pd.merge(deseq2_res[["feature", "log2FoldChange", "padj"]], 
@@ -831,17 +914,30 @@ merged_table = merged_table.rename(columns={
     "lower_perc12_5": "linreg_lower_perc12_5",
     "upper_perc87_5": "linreg_upper_perc87_5"
 })
-merged_table = pd.merge(merged_table, 
-                        rf_res[["feature", "mean_importance",
-                                "std_importance", "positive_fraction",
-                                "lower_perc12_5", "upper_perc87_5"]],
+# merged_table = pd.merge(merged_table, 
+#                         rf_res[["feature", "mean_importance",
+#                                 "std_importance", "positive_fraction",
+#                                 "lower_perc12_5", "upper_perc87_5"]],
+#                         on="feature", how="outer")
+# merged_table = merged_table.rename(columns={
+#     "mean_importance": "rf_mean_importance",
+#     "std_importance": "rf_std_importance",
+#     "positive_fraction": "rf_positive_fraction",
+#     "lower_perc12_5": "rf_lower_perc12_5",
+#     "upper_perc87_5": "rf_upper_perc87_5"
+# })
+merged_table = pd.merge(merged_table,
+                        rf_res[["feature", "selection_frequency",
+                                "weak_selection_frequency", "mean_ranking",
+                                "median_ranking", "min_ranking", "max_ranking"]],
                         on="feature", how="outer")
 merged_table = merged_table.rename(columns={
-    "mean_importance": "rf_mean_importance",
-    "std_importance": "rf_std_importance",
-    "positive_fraction": "rf_positive_fraction",
-    "lower_perc12_5": "rf_lower_perc12_5",
-    "upper_perc87_5": "rf_upper_perc87_5"
+    "selection_frequency": "rf_selection_frequency",
+    "weak_selection_frequency": "rf_weak_selection_frequency",
+    "mean_ranking": "rf_mean_ranking",
+    "median_ranking": "rf_median_ranking",
+    "min_ranking": "rf_min_ranking",
+    "max_ranking": "rf_max_ranking"
 })
 merged_table = pd.merge(merged_table, 
                         fcnn_res[["feature", "mean_importance",
@@ -855,8 +951,10 @@ merged_table = merged_table.rename(columns={
     "lower_perc12_5": "fcnn_lower_perc12_5",
     "upper_perc87_5": "fcnn_upper_perc87_5"
 })
-merged_table.to_csv(input_dir / "merged_feature_importance.csv", index=False)
 
+# merged_table.to_csv(input_dir / "merged_feature_importance.csv", index=False)
+# merged_table.to_csv("/data/local/jy1008/SaMu/results/03142026/merged_feature_importance.csv", index=False)
+merged_table.to_csv(output_dir / "merged_feature_importance.csv", index=False)
 
 # === Old code for running a single L1 logistic regression model without nested CV ===
 """clf = LogisticRegressionCV(
