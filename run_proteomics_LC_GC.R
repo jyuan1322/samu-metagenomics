@@ -27,10 +27,11 @@ meta_df <- meta_df[, c(
   "stvol"
 )]
 meta_df <- meta_df %>% filter(Full.SaMu == 1)
-meta_df$smke <- ifelse(meta_df$smke %in% c("1", "2", "3"), 1,
-                       ifelse(meta_df$smke == "0", 0, NA))
-meta_df$alco <- ifelse(meta_df$alco %in% c("1", "2"), 0,
-                       ifelse(meta_df$alco %in% c("3", "4"), 1, NA))
+# NOTE: 5/8/2026 - smoke and alcohol variables are already binarized, so no need to convert.
+# meta_df$smke <- ifelse(meta_df$smke %in% c("1", "2", "3"), 1,
+#                        ifelse(meta_df$smke == "0", 0, NA))
+# meta_df$alco <- ifelse(meta_df$alco %in% c("1", "2"), 0,
+#                        ifelse(meta_df$alco %in% c("3", "4"), 1, NA))
 print("Converting sarc_status to numeric, converting non-numeric values to NA")
 meta_df$sarc_status <- as.numeric(meta_df$sarc_status)
 # binarize sarc_status
@@ -40,15 +41,15 @@ meta_df$sarc_status_bin <- factor(meta_df$sarc_status_bin, levels = c("NoSarc", 
 
 
 
-# parent_dir <- "/data/local/jy1008/SaMu/proteomics/GC_MS"
-# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_GC-MS"
-# experiment_name <- "GC_MS"
+parent_dir <- "/data/local/jy1008/SaMu/proteomics/GC_MS"
+output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_GC-MS"
+experiment_name <- "GC_MS"
 # parent_dir <- "/data/local/jy1008/SaMu/proteomics/LC_MS_neg"
 # output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_neg"
 # experiment_name <- "LC_MS_neg"
-parent_dir <- "/data/local/jy1008/SaMu/proteomics/LC_MS_pos"
-output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_pos"
-experiment_name <- "LC_MS_pos"
+# parent_dir <- "/data/local/jy1008/SaMu/proteomics/LC_MS_pos"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_pos"
+# experiment_name <- "LC_MS_pos"
 
 
 files <- list.files(file.path(parent_dir, "data"),
@@ -263,7 +264,7 @@ se <- make_se(
 # Filter low-quality proteins
 se_filt <- filter_se(se,                       
 #                      thr = 50,  ## the threshold of missing number in at least one condition
-                     fraction = 0.15 ## the threshold of missing occupancy in each protein
+                     fraction = 0.25 ## the threshold of missing occupancy in each protein
                     )
 # NOTE: the documentation for the fraction seems to be incorrect.
 # It is not the fraction of missing values, but rather the fraction of valid values required.
@@ -322,15 +323,25 @@ write.csv(
   row.names = FALSE
 )
 
-metadata_df <- as.data.frame(colData(se_imp))
+# metadata_df <- as.data.frame(colData(se_imp))
+# write.csv(
+#   metadata_df,
+#   file.path(output_dir, paste0("proteomics_", experiment_name, "_vsn_imputed_metadata.csv")),
+#   row.names = FALSE
+# )
+
+# write the full covariates metadata
+# Get sample order from the imputed SE object
+sample_labels <- colData(se_imp)$label
+
+# Filter and reorder full metadata to match
+metadata_df <- meta_df[match(sample_labels, meta_df$label), ]
+
 write.csv(
   metadata_df,
   file.path(output_dir, paste0("proteomics_", experiment_name, "_vsn_imputed_metadata.csv")),
   row.names = FALSE
 )
-
-
-
 
 # -----
 
