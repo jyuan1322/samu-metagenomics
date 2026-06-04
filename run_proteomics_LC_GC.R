@@ -3,6 +3,7 @@ library(readr)
 library(purrr)
 library(tidyr)
 library(ggplot2)
+library(tibble)
 
 meta_df <- read.csv("/data/local/jy1008/SaMu/results/latest/metagenomics_R/SaMu_sarcopeniestatus_majorcovariates_v13_16012026_FullSaMu_only.csv",
                 header = TRUE, stringsAsFactors = FALSE)
@@ -57,34 +58,23 @@ files <- list.files(file.path(parent_dir, "data"),
                     recursive = TRUE,
                     full.names = TRUE)
 
-combined_df <- map_dfr(files, function(file) {
+combined_wide <- map(files, function(file) {
+  df <- read_csv(file, show_col_types = FALSE)
+  # each file is already samples x metabolites (Sample column + metabolite columns)
+  # transpose to metabolites x samples
+  df %>%
+    column_to_rownames("Sample") %>%
+    t() %>%
+    as.data.frame() %>%
+    rownames_to_column("name")
+}) %>%
+  reduce(full_join, by = "name")  # shared metabolites merged, batch-unique get NAs
 
-  df <- read_csv(file)
-
-  df_long <- df %>%
-    pivot_longer(
-      cols = -Sample,
-      names_to = "Metabolite",
-      values_to = "Intensity"
-    )
-
-  df_long
-})
-combined_df$Intensity <- as.numeric(combined_df$Intensity)
-combined_df <- combined_df %>%
-  mutate(
-    ID = Metabolite,
-    name = Metabolite
-  )
-combined_wide <- combined_df %>%
-  select(ID, name, Sample, Intensity) %>%
-  pivot_wider(
-    names_from = Sample,
-    values_from = Intensity
-  )
 combined_wide <- as.data.frame(combined_wide)
+combined_wide$ID <- combined_wide$name
 
-rownames(combined_wide) <- combined_wide$ID
+# unify with meta_df labels by removing underscores from column names
+colnames(combined_wide) <- gsub("_", "", colnames(combined_wide))
 ecols <- grep("^SaMu", colnames(combined_wide))
 
 
@@ -394,11 +384,19 @@ scaled_mat <- t(scale(t(log_mat)))
 # top50_proteins <- names(sort(row_vars, decreasing = TRUE))[1:num_top_prots]
 
 # grab by smallest p-value from the DE results
-top50_proteins <- rowData(results) %>%
-  as.data.frame() %>%
-  arrange(Sarc_vs_NoSarc_p.val) %>%      # sort by this column
-  slice_head(n = 50) %>%
-  pull(ID)           # extract this column
+cap_proteins <- FALSE
+if (cap_proteins) {
+  top50_proteins <- rowData(results) %>%
+    as.data.frame() %>%
+    arrange(Sarc_vs_NoSarc_p.val) %>%      # sort by this column
+    slice_head(n = 50) %>%
+    pull(ID)           # extract this column
+} else {
+  top50_proteins <- rowData(results) %>%
+    as.data.frame() %>%
+    arrange(Sarc_vs_NoSarc_p.val) %>%      # sort by this column
+    pull(ID)           # extract this column
+}
 
 # 1. Get the top 50 proteins by smallest p-value
 # results_df <- as.data.frame(rowData(results))

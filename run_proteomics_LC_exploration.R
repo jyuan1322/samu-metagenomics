@@ -3,6 +3,7 @@ library(readr)
 library(purrr)
 library(tidyr)
 library(ggplot2)
+library(tibble)
 
 meta_df <- read.csv("/data/local/jy1008/SaMu/results/latest/metagenomics_R/SaMu_sarcopeniestatus_majorcovariates_v13_16012026_FullSaMu_only.csv",
                 header = TRUE, stringsAsFactors = FALSE)
@@ -27,10 +28,11 @@ meta_df <- meta_df[, c(
   "stvol"
 )]
 meta_df <- meta_df %>% filter(Full.SaMu == 1)
-meta_df$smke <- ifelse(meta_df$smke %in% c("1", "2", "3"), 1,
-                       ifelse(meta_df$smke == "0", 0, NA))
-meta_df$alco <- ifelse(meta_df$alco %in% c("1", "2"), 0,
-                       ifelse(meta_df$alco %in% c("3", "4"), 1, NA))
+# NOTE: 5/8/2026 - smoke and alcohol variables are already binarized, so no need to convert.
+# meta_df$smke <- ifelse(meta_df$smke %in% c("1", "2", "3"), 1,
+#                        ifelse(meta_df$smke == "0", 0, NA))
+# meta_df$alco <- ifelse(meta_df$alco %in% c("1", "2"), 0,
+#                        ifelse(meta_df$alco %in% c("3", "4"), 1, NA))
 print("Converting sarc_status to numeric, converting non-numeric values to NA")
 meta_df$sarc_status <- as.numeric(meta_df$sarc_status)
 # binarize sarc_status
@@ -44,57 +46,103 @@ meta_df$sarc_status_bin <- factor(meta_df$sarc_status_bin, levels = c("NoSarc", 
 # output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_GC-MS"
 # experiment_name <- "GC_MS"
 # parent_dir <- "/data/local/jy1008/SaMu/proteomics/LC_MS_neg"
-# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_neg"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_neg/clustered_all"
 # experiment_name <- "LC_MS_neg_clustered"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_neg/clustered_1567"
+# experiment_name <- "LC_MS_neg_1567"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_neg/clustered_234"
+# experiment_name <- "LC_MS_neg_234"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_neg/clustered_89"
+# experiment_name <- "LC_MS_neg_89"
+
 parent_dir <- "/data/local/jy1008/SaMu/proteomics/LC_MS_pos"
-output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_pos"
-experiment_name <- "LC_MS_pos"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_pos/clustered_all"
+# experiment_name <- "LC_MS_pos_clustered"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_pos/clustered_1567"
+# experiment_name <- "LC_MS_pos_1567"
+# output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_pos/clustered_234"
+# experiment_name <- "LC_MS_pos_234"
+output_dir <- "/data/local/jy1008/SaMu/results/latest/proteomics_LC-MS_pos/clustered_89"
+experiment_name <- "LC_MS_pos_89"
 
 
-files <- list.files(file.path(parent_dir, "data"),
-                    pattern = "\\.csv$",
-                    recursive = TRUE,
-                    full.names = TRUE)
-print(files)
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# files <- list.files(file.path(parent_dir, "data"),
+#                     pattern = "\\.csv$",
+#                     recursive = TRUE,
+#                     full.names = TRUE)
+# print(files)
+
 # for LC-MS test, single batch
 # files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_neg/data/LCMS_processed_blocks1,5,6,7_SaMu_2_28and165_297_neg.csv")
 # files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_neg/data/LCMS_processed_blocks2,3,4_SaMu_29_164_neg.csv")
 # files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_neg/data/LCMS_processed_blocks8,9,1PY2_SaMu_298_371and5PY2_25PY2_neg.csv")
-# for GC-MS test, single batch
-files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_pos/data/LCMS_processed_blocks1,5,6,7_SaMu_2_28and165_297_pos.csv")
+
+# files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_pos/data/LCMS_processed_blocks1,5,6,7_SaMu_2_28and165_297_pos.csv")
 # files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_pos/data/LCMS_processed_blocks2,3,4_SaMu_29_164_pos.csv")
-# files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_pos/data/LCMS_processed_blocks8,9,1PY2_SaMu_298_371and5PY2_25PY2_pos.csv")
+files <- c("/data/local/jy1008/SaMu/proteomics/LC_MS_pos/data/LCMS_processed_blocks8,9,1PY2_SaMu_298_371and5PY2_25PY2_pos.csv")
 
-
-combined_df <- map_dfr(files, function(file) {
-
-  df <- read_csv(file)
-
-  df_long <- df %>%
-    pivot_longer(
-      cols = -Sample,
-      names_to = "Metabolite",
-      values_to = "Intensity"
-    )
-
-  df_long
+# ----------------------------------------
+# Table: which features are in which files
+# ----------------------------------------
+feature_file_map <- map_dfr(files, function(file) {
+  df <- read_csv(file, show_col_types = FALSE)
+  
+  # The non-Sample columns are the features/metabolites
+  features <- setdiff(colnames(df), "Sample")
+  
+  tibble(
+    Metabolite = features,
+    File = basename(file)
+  )
 })
-combined_df$Intensity <- as.numeric(combined_df$Intensity)
-combined_df <- combined_df %>%
-  mutate(
-    # ID = Metabolite,
-    name = Metabolite
-  )
-combined_wide <- combined_df %>%
-  # select(ID, name, Sample, Intensity) %>%
-  select(name, Sample, Intensity) %>%
+
+# Pivot to wide: rows = features, cols = files, values = presence (0/1)
+feature_presence_table <- feature_file_map %>%
+  mutate(Present = 1) %>%
   pivot_wider(
-    names_from = Sample,
-    values_from = Intensity
+    names_from = File,
+    values_from = Present,
+    values_fill = 0
   )
+
+# Summary: how many features per file
+file_summary <- feature_file_map %>%
+  count(File, name = "n_features")
+print(file_summary)
+
+# Summary: how many files each feature appears in
+feature_summary <- feature_presence_table %>%
+  mutate(n_files = rowSums(select(., -Metabolite))) %>%
+  count(n_files, name = "n_features")
+print(feature_summary)
+
+# Save the table
+write_csv(feature_presence_table, file.path(output_dir, paste0(experiment_name, "_feature_file_presence.csv")))
+
+
+
+
+# ----------------------------------------
+# Combine files: shared features get one row, batch-unique get NAs
+# ----------------------------------------
+combined_wide <- map(files, function(file) {
+  df <- as.data.frame(read_csv(file, show_col_types = FALSE))
+  rownames(df) <- df$Sample
+  df$Sample <- NULL
+  df_t <- as.data.frame(t(df))
+  df_t$name <- rownames(df_t)
+  df_t
+}) %>%
+  reduce(full_join, by = "name")
+
 combined_wide <- as.data.frame(combined_wide)
 
-rownames(combined_wide) <- combined_wide$ID
+# unify with meta_df labels by removing underscores from column names
+colnames(combined_wide) <- gsub("_", "", colnames(combined_wide))
 ecols <- grep("^SaMu", colnames(combined_wide))
 
 
@@ -236,8 +284,12 @@ colnames(cor_mat) <- rownames(mat)
 
 library(pheatmap)
 
+# Zero out the diagonal for display purposes
+cor_mat_display <- cor_mat
+diag(cor_mat_display) <- 0
+
 pdf(file.path(output_dir, "lc_ms_neg_correlation_heatmap.pdf"), width = 20, height = 20)
-pheatmap(cor_mat,
+pheatmap(cor_mat_display,
          clustering_distance_rows = as.dist(1 - cor_mat),
          clustering_distance_cols = as.dist(1 - cor_mat),
          show_rownames = FALSE,
@@ -249,6 +301,7 @@ cor_highlight[cor_highlight <= corr_thresh] <- NA
 
 dist_mat <- as.dist(1 - cor_mat)
 
+diag(cor_highlight) <- NA
 pheatmap(cor_highlight,
          clustering_distance_rows = dist_mat,
          clustering_distance_cols = dist_mat,
@@ -285,6 +338,24 @@ peak_clusters_filtered <- peak_clusters[
 
 included_peaks <- peak_clusters_filtered$peak
 
+# ----------------------------------------
+# Summary: samples, features, clusters
+# ----------------------------------------
+n_samples       <- ncol(mat)
+n_features_raw  <- nrow(mat)
+n_clusters      <- length(unique(peak_clusters_filtered$cluster))
+n_singleton     <- sum(clusters$csize == 1)  # peaks not in any cluster
+
+sink(file.path(output_dir, paste0(experiment_name, "_pipeline_summary.txt")))
+cat("=== Pipeline Summary ===\n")
+cat(sprintf("  Samples:                        %d\n", n_samples))
+cat(sprintf("  Raw features (post-filter):     %d\n", n_features_raw))
+cat(sprintf("  Features in clusters (>1 peak): %d\n", length(included_peaks)))
+cat(sprintf("  Singleton peaks (excluded):     %d\n", n_singleton))
+cat(sprintf("  Clusters generated:             %d\n", n_clusters))
+cat("========================\n")
+sink()
+
 cor_subset <- cor_mat[included_peaks, included_peaks]
 pdf(file.path(output_dir, "lc_ms_neg_correlation_heatmap_highlight_filtered.pdf"), width = 20, height = 20)
 cor_highlight <- cor_subset
@@ -292,6 +363,7 @@ cor_highlight[cor_highlight <= corr_thresh] <- NA
 
 dist_mat <- as.dist(1 - cor_subset)
 
+diag(cor_highlight) <- NA
 pheatmap(cor_highlight,
          clustering_distance_rows = dist_mat,
          clustering_distance_cols = dist_mat,
@@ -302,8 +374,7 @@ pheatmap(cor_highlight,
 dev.off()
 
 # given peak clusters, reformat combined_wide to have one row per cluster,
-# taking the max intensity in each group as representative of the cluster
-# (since they are highly correlated)
+# taking the mean intensity in each group as representative of the cluster
 library(dplyr)
 library(tidyr)
 
@@ -316,9 +387,14 @@ df_long <- as.data.frame(mat) %>%
   ) %>%
   inner_join(peak_clusters_filtered, by = "peak")
 
+# Max intensity per cluster/sample
+# df_clustered <- df_long %>%
+#   group_by(cluster, Sample) %>%
+#   summarise(Intensity = max(Intensity, na.rm = TRUE), .groups = "drop")
 df_clustered <- df_long %>%
   group_by(cluster, Sample) %>%
-  summarise(Intensity = max(Intensity, na.rm = TRUE), .groups = "drop")
+  summarise(Intensity = mean(Intensity, na.rm = TRUE), .groups = "drop")
+
 
 df_wide <- df_clustered %>%
   pivot_wider(
@@ -364,6 +440,9 @@ all(coldata$label %in% colnames(combined_wide)[ecols])
 # Running DEP2
 # ----------------------------------------
 library(DEP2)
+
+combined_wide$ID <- combined_wide$name
+ecols <- grep("^SaMu", colnames(combined_wide))
 
 # Create SummarizedExperiment
 coldata$condition <- factor(coldata$sarc_status_bin, levels = c("NoSarc", "Sarc"))
@@ -558,11 +637,19 @@ scaled_mat <- t(scale(t(log_mat)))
 # top50_proteins <- names(sort(row_vars, decreasing = TRUE))[1:num_top_prots]
 
 # grab by smallest p-value from the DE results
-top50_proteins <- rowData(results) %>%
-  as.data.frame() %>%
-  arrange(Sarc_vs_NoSarc_p.val) %>%      # sort by this column
-  slice_head(n = 50) %>%
-  pull(ID)           # extract this column
+cap_proteins <- FALSE
+if (cap_proteins) {
+  top50_proteins <- rowData(results) %>%
+    as.data.frame() %>%
+    arrange(Sarc_vs_NoSarc_p.val) %>%      # sort by this column
+    slice_head(n = 50) %>%
+    pull(ID)           # extract this column
+} else {
+  top50_proteins <- rowData(results) %>%
+    as.data.frame() %>%
+    arrange(Sarc_vs_NoSarc_p.val) %>%      # sort by this column
+    pull(ID)           # extract this column
+}
 
 # 1. Get the top 50 proteins by smallest p-value
 # results_df <- as.data.frame(rowData(results))
@@ -629,3 +716,21 @@ Heatmap(
   # row_title = "Proteins"
 )
 dev.off()
+
+
+
+# Write the cluster assignments to a CSV
+peak_cluster_export <- df_long %>%
+  group_by(cluster, peak) %>%
+  summarise(median_intensity = median(Intensity, na.rm = TRUE), .groups = "drop") %>%
+  left_join(peak_clusters_filtered, by = c("cluster", "peak")) %>%
+  group_by(cluster) %>%
+  mutate(cluster_size = n()) %>%
+  ungroup() %>%
+  arrange(cluster, desc(median_intensity))
+
+write.csv(
+  peak_cluster_export,
+  file.path(output_dir, paste0(experiment_name, "_peak_cluster_mapping.csv")),
+  row.names = FALSE
+)
