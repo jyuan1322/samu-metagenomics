@@ -6,19 +6,21 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import KFold, StratifiedKFold, RepeatedStratifiedKFold, GridSearchCV, cross_val_score, cross_validate
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_curve, roc_auc_score, auc, RocCurveDisplay
+from sklearn.linear_model import Lasso, LogisticRegression
+from sklearn.metrics import roc_curve, roc_auc_score, auc, RocCurveDisplay, r2_score
 import matplotlib.pyplot as plt
 from sklearn.metrics import RocCurveDisplay
-from sklearn.neural_network import MLPClassifier
-from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, GradientBoostingClassifier
+from sklearn.neural_network import MLPClassifier, MLPRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, AdaBoostClassifier, GradientBoostingClassifier
+from scipy.stats import spearmanr
+from sklearn.utils import compute_sample_weight
 
 # for neural net
 from fcnn_wrapper import *
 
 # input_dir = Path("/data/local/jy1008/SaMu/results/02102026")
 input_dir = Path("/data/local/jy1008/SaMu/results/latest/metagenomics_R")
-output_dir = Path("/data/local/jy1008/SaMu/results/latest/metagenomics_ml")
+output_dir = Path("/data/local/jy1008/SaMu/results/metagen-model-explore-06042026/metagenomics_ml")
 meta_filtered = pd.read_csv(input_dir / "meta_filtered_03132026.csv")
 meta_df = pd.read_csv(input_dir / "meta_df_FullSaMu_03132026.csv")
 
@@ -28,19 +30,23 @@ print(meta_filtered.info())
 print(meta_df.head())
 print(meta_df.info())
 
-def prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6):
+def prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6, y_mode="binary"):
     # remove samples who have Full.SaMu == 0
     meta_df = meta_df[(meta_df['Full.SaMu'] == 1)]
     meta_df = meta_df.copy()
 
-    # binarize sarc_status for lasso logistic regression
-    meta_df["sarc_status_bin"] = (meta_df["sarc_status"] > 0).astype(int)
+    if y_mode == "binary":
+        meta_df["y"] = (meta_df["sarc_status"] > 0).astype(int)
+    elif y_mode == "continuous":
+        meta_df["y"] = meta_df["sarc_status"].astype(float)
+    else:
+        raise ValueError(f"y_mode must be 'binary' or 'continuous', got '{y_mode}'")
 
     # File_ID matches Sample
     # meta_cov = meta_df.set_index('File_ID')[['age_def_scaled', 'sex', 'smke', 'alco',
     #                                          'nutr_score_scaled', 'bmi_scaled', 'sarc_status_bin']]
     meta_cov = meta_df.set_index('File_ID')[['age_def', 'sex', 'smke', 'alco',
-                                            'nutr_score', 'bmi', 'sarc_status_bin']]
+                                            'nutr_score', 'bmi', 'y']]
     continuous_cols = ['age_def', 'nutr_score', 'bmi']
     binary_cols = ['sex', 'smke', 'alco']
 
@@ -84,14 +90,13 @@ def prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-
                     meta_cov_clean.loc[common_samples]], axis=1)
 
 
-    y = meta_df.set_index('File_ID').loc[common_samples, 'sarc_status_bin']
-    y = (y > 0).astype(int)
+    y = meta_df.set_index('File_ID').loc[common_samples, 'y']
 
-    # After NA removal, make sure sarc_status_bin is not in X
-    if 'sarc_status_bin' in X.columns:
-        X = X.drop(columns='sarc_status_bin')
+    # After NA removal, make sure y is not in X
+    if 'y' in X.columns:
+        X = X.drop(columns='y')
 
-    assert 'sarc_status_bin' not in X.columns
+    assert 'y' not in X.columns
 
     return X, y, continuous_cols, binary_cols
 
@@ -103,6 +108,7 @@ def prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-
 def run_lasso_logreg_pipeline(
         X, y,
         model_type="lasso_logreg",
+        y_mode="binary",
         continuous_cols=None,
         binary_cols=None,
         clr_taxa_cols=None,
@@ -185,39 +191,76 @@ def run_lasso_logreg_pipeline(
     else:
         param_grid = None
 
-    model_dict = {
-        "lasso_logreg": {
-            "estimator": LogisticRegression(
-                penalty='l1', solver='saga', max_iter=5000, random_state=42
-            ),
-            "param_grid": {"classifier__C": Cs}
-        },
-        "mlp": {
-            "estimator": MLPClassifier(max_iter=1000, random_state=42),
-            "param_grid": {
-                "classifier__hidden_layer_sizes": [(50,), (100,), (50, 50)],
-                "classifier__alpha": [1e-4, 1e-3, 1e-2],
-            }
-        },
-        "fcnn": {
-            "estimator": make_ffnn_classifier(input_dim=fcnn_input_dim, h=[0, 0]),
-            "param_grid": {
-                "classifier__optimizer__weight_decay": [0.01],
-                "classifier__module__p": [0.1],
-                "classifier__lr": [0.001],
-                # "classifier__lr": [1e-5],
-                "classifier__max_epochs": [2000]
-            }
-        },
-        "random_forest": {
-            "estimator": RandomForestClassifier(random_state=42),
-            "param_grid": param_grid
-        },
-        "adaboost": {
-            "estimator": AdaBoostClassifier(random_state=42),
-            "param_grid": param_grid
-        },
-    }
+    # === Model definitions, branched by y_mode ===
+    if y_mode == "binary":
+        model_dict = {
+            "lasso_logreg": {
+                "estimator": LogisticRegression(
+                    penalty='l1', solver='saga', max_iter=5000, random_state=42
+                ),
+                "param_grid": {"classifier__C": Cs}
+            },
+            "mlp": {
+                "estimator": MLPClassifier(max_iter=1000, random_state=42),
+                "param_grid": {
+                    "classifier__hidden_layer_sizes": [(50,), (100,), (50, 50)],
+                    "classifier__alpha": [1e-4, 1e-3, 1e-2],
+                }
+            },
+            "fcnn": {
+                "estimator": make_ffnn_classifier(input_dim=fcnn_input_dim, h=[0, 0]),
+                "param_grid": {
+                    "classifier__optimizer__weight_decay": [0.01],
+                    "classifier__module__p": [0.1],
+                    "classifier__lr": [0.001],
+                    # "classifier__lr": [1e-5],
+                    "classifier__max_epochs": [2000]
+                }
+            },
+            "random_forest": {
+                "estimator": RandomForestClassifier(random_state=42),
+                "param_grid": param_grid
+            },
+            "adaboost": {
+                "estimator": AdaBoostClassifier(random_state=42),
+                "param_grid": param_grid
+            },
+        }
+        primary_scoring = "roc_auc"
+        cv_splitter = StratifiedKFold   # stratify only makes sense for classification
+
+    elif y_mode == "continuous":
+        model_dict = {
+            "lasso_logreg": {   # repurposed as lasso regression
+                "estimator": Lasso(max_iter=5000, random_state=42),
+                "param_grid": {"classifier__alpha": [1/c for c in Cs]}
+            },
+            "random_forest": {
+                "estimator": RandomForestRegressor(random_state=42),
+                "param_grid": param_grid
+            },
+            "mlp": {
+                "estimator": MLPRegressor(max_iter=1000, random_state=42),
+                "param_grid": {
+                    "classifier__hidden_layer_sizes": [(50,), (100,), (50, 50)],
+                    "classifier__alpha": [1e-4, 1e-3, 1e-2],
+                }
+            },
+            "fcnn": {
+                "estimator": make_ffnn_regressor(input_dim=fcnn_input_dim, h=[0, 0]),
+                "param_grid": {
+                    "classifier__optimizer__weight_decay": [0.01],
+                    "classifier__module__p": [0.1],
+                    "classifier__lr": [0.001],
+                    "classifier__max_epochs": [2000]
+                }
+            },
+        }
+        primary_scoring = "r2"
+        cv_splitter = KFold   # no stratification for regression
+
+    else:
+        raise ValueError(f"y_mode must be 'binary' or 'continuous', got '{y_mode}'")
 
     if model_type not in model_dict:
         raise ValueError(f"Unknown model_type '{model_type}'. Choose from {list(model_dict.keys())}")
@@ -251,27 +294,19 @@ def run_lasso_logreg_pipeline(
     # === Cross-validation setup ===
     # Nested cross-validation strategy
     # Outer loop: 5-fold CV
-    # NOTE: in practice, I found that performance improved when I set C range to [-2, 1] instead of [-3, 3]
-    # outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=111)
-    # outer_cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=333)
+    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=222)
+    # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=111)
+    outer_cv = cv_splitter(n_splits=5, shuffle=True, random_state=222)
+    inner_cv = cv_splitter(n_splits=5, shuffle=True, random_state=111)
 
-    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=222)
-    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=111)
-    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=333)
-    # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=444)
-    # outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=101)
-    # inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=202)
-    # outer_cv = KFold(n_splits=5, shuffle=True, random_state=101)
-    # inner_cv = KFold(n_splits=5, shuffle=True, random_state=202)
-
-    scoring_metric = "roc_auc"
-    # scoring_metric = "balanced_accuracy"
+    # scoring_metric = "roc_auc"
     # Inner loop: 5-fold CV for hyperparameter tuning
     inner_grid_search = GridSearchCV(
         estimator = pipeline,
         param_grid = param_grid,
         cv = inner_cv,
-        scoring = scoring_metric,
+        # scoring = scoring_metric,
+        scoring = primary_scoring,
         n_jobs = -1
     )
 
@@ -282,28 +317,147 @@ def run_lasso_logreg_pipeline(
         X = X,
         y = y,
         cv = outer_cv,
-        scoring = scoring_metric,
+        # scoring = scoring_metric,
+        scoring = primary_scoring,
         n_jobs = -1
     )
-    print(f"{scoring_metric}: {nested_scores}")
-    # AUC scores: [0.66666667 0.74702381 0.61607143 0.55652174 0.55942029]
+    # print(f"{scoring_metric}: {nested_scores}")
+    print(f"{primary_scoring}: {nested_scores}")
 
     # === Cross-validation ===
     # ROC curve
-    cv_results = cross_validate(
-        inner_grid_search,
-        X=X,
-        y=y,
-        cv=outer_cv,
-        return_estimator=True,
-        return_indices=True,
-        n_jobs=-1
-    )
+    if y_mode == "binary":
+        cv_results = cross_validate(
+            inner_grid_search,
+            X=X,
+            y=y,
+            cv=outer_cv,
+            return_estimator=True,
+            return_indices=True,
+            n_jobs=-1
+        )
+    
+    elif y_mode == "continuous":
+        sample_weights = compute_sample_weight(class_weight='balanced', y=y)
+        cv_results = cross_validate(
+            inner_grid_search,
+            X=X,
+            y=y,
+            cv=outer_cv,
+            params={"classifier__sample_weight": sample_weights},
+            return_estimator=True,
+            return_indices=True,
+            n_jobs=-1
+        )
+
     # for neural network, disable pickling for now
     # if model_type == "lasso_logreg":
     with open(outfile_cv, "wb") as f:
         pickle.dump(cv_results, f)
 
+    # === Diagnostic plot ===
+    if y_mode == "binary":
+        # your existing ROC curve code unchanged
+        _plot_roc_curve(cv_results, X, y, outer_cv, outfile_roc_curve)
+
+    elif y_mode == "continuous":
+        _plot_regression_diagnostics(cv_results, X, y, outfile_roc_curve)
+
+
+
+def _plot_regression_diagnostics(cv_results, X, y, outfile):
+    from sklearn.metrics import r2_score
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+
+    all_y_true, all_y_pred = [], []
+    fold_rhos = []
+    fold_r2s = []
+    fold_data = []  # store per-fold (y_test, y_pred) for grouped boxplots
+
+    for fold_idx, estimator in enumerate(cv_results["estimator"]):
+        test_idx = cv_results["indices"]["test"][fold_idx]
+        X_test = X.iloc[test_idx]
+        y_test = y.iloc[test_idx]
+        y_pred = estimator.predict(X_test)
+
+        rho_fold, _ = spearmanr(y_test, y_pred)
+        r2_fold = r2_score(y_test, y_pred)
+        fold_rhos.append(rho_fold)
+        fold_r2s.append(r2_fold)
+        fold_data.append((np.array(y_test), np.array(y_pred)))
+
+        # jitter x (true labels) for visibility
+        jitter = np.random.uniform(-0.15, 0.15, size=len(y_test))
+        ax.scatter(y_test + jitter, y_pred, alpha=0.3,
+                   color=colors[fold_idx % len(colors)],
+                   s=15, label=f"Fold {fold_idx+1}  ρ={rho_fold:.2f}  R²={r2_fold:.2f}",
+                   zorder=3)
+
+        all_y_true.extend(y_test)
+        all_y_pred.extend(y_pred)
+
+    all_y_true = np.array(all_y_true)
+    all_y_pred = np.array(all_y_pred)
+
+    # --- Grouped boxplots: one box per fold per true class ---
+    unique_vals = sorted(np.unique(all_y_true))
+    n_folds = len(fold_data)
+    box_width = 0.12
+    # spread fold boxes evenly around each integer class position
+    offsets = np.linspace(-(n_folds - 1) / 2, (n_folds - 1) / 2, n_folds) * (box_width + 0.02)
+
+    for fold_idx, (y_test_fold, y_pred_fold) in enumerate(fold_data):
+        for val in unique_vals:
+            mask = y_test_fold == val
+            if mask.sum() == 0:
+                continue
+            pos = val + offsets[fold_idx]
+            bp = ax.boxplot(
+                y_pred_fold[mask],
+                positions=[pos],
+                widths=box_width,
+                patch_artist=True,
+                boxprops=dict(facecolor=colors[fold_idx % len(colors)], alpha=0.4),
+                medianprops=dict(color='black', linewidth=1.5),
+                whiskerprops=dict(color=colors[fold_idx % len(colors)]),
+                capprops=dict(color=colors[fold_idx % len(colors)]),
+                flierprops=dict(marker='x', color=colors[fold_idx % len(colors)], alpha=0.3),
+                zorder=5
+            )
+
+    # --- Annotations ---
+    rho_overall, pval_overall = spearmanr(all_y_true, all_y_pred)
+    r2_overall = r2_score(all_y_true, all_y_pred)
+    mean_rho = np.mean(fold_rhos)
+    std_rho = np.std(fold_rhos)
+    mean_r2 = np.mean(fold_r2s)
+    std_r2 = np.std(fold_r2s)
+
+    annotation = (
+        f"Overall ρ = {rho_overall:.3f} (p = {pval_overall:.3g}),  R² = {r2_overall:.3f}\n"
+        f"Mean per-fold ρ = {mean_rho:.3f} ± {std_rho:.3f},  R² = {mean_r2:.3f} ± {std_r2:.3f}"
+    )
+    ax.text(0.05, 0.95, annotation,
+            transform=ax.transAxes,
+            fontsize=9, verticalalignment='top',
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+
+    ax.set_xlabel("True sarc_status")
+    ax.set_ylabel("Predicted sarc_status")
+    ax.set_title("Predicted vs Actual sarc_status")
+    ax.set_xticks(unique_vals)
+    ax.set_xticklabels([str(int(v)) for v in unique_vals])
+    ax.legend(loc="lower right", fontsize=7)
+
+    plt.tight_layout()
+    plt.savefig(outfile, format="pdf", bbox_inches="tight")
+    plt.show()
+
+
+def _plot_roc_curve(cv_results, X, y, outer_cv, outfile):
     # === ROC plot ===
     # Plot ROC curves using RocCurveDisplay
     # https://scikit-learn.org/stable/auto_examples/model_selection/plot_roc_crossval.html
@@ -364,53 +518,54 @@ def run_lasso_logreg_pipeline(
         title=f"Mean ROC curve",
     )
     ax.legend(loc="lower right")
-    plt.savefig(outfile_roc_curve, format="pdf", bbox_inches="tight")
+    plt.savefig(outfile, format="pdf", bbox_inches="tight")
     plt.show()
 
 
+y_mode = "continuous"
 
-X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6)
+X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6, y_mode=y_mode)
 # taxa are already CLR transformed
 taxa_cols = [col for col in X.columns.tolist() if isinstance(col, str) and col.startswith("k__Bacteria")]
 clinical_cols = [col for col in X.columns.tolist() if isinstance(col, str) and not col.startswith("k__Bacteria")]
 
 # all predictors
-run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg",
+run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", y_mode=y_mode,
                           continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols,
                           outfile_cv=output_dir / "cv_results_l1logreg_full.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_l1logreg_full.pdf")
 
 # only taxonomic predictors
 # X_taxon = X[taxa_cols]
-run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg",
+run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", y_mode=y_mode,
                           continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols,
                           outfile_cv=output_dir / "cv_results_l1logreg_taxa_only.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_l1logreg_taxa_only.pdf")
 
 # only clinical covariates
 # X_clinical = X[clinical_cols]
-run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg",
+run_lasso_logreg_pipeline(X=X, y=y, model_type="lasso_logreg", y_mode=y_mode,
                           continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None,
                           outfile_cv=output_dir / "cv_results_l1logreg_clinical_only.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_l1logreg_clinical_only.pdf")
 
 # === Running random forest ===
-X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=False, pseudo_count=1e-6)
+X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=False, pseudo_count=1e-6, y_mode=y_mode)
 # taxa are already CLR transformed
 taxa_cols = [col for col in X.columns.tolist() if isinstance(col, str) and col.startswith("k__Bacteria")]
 clinical_cols = [col for col in X.columns.tolist() if isinstance(col, str) and not col.startswith("k__Bacteria")]
 
-run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", y_mode=y_mode,
                           continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols,
                           outfile_cv=output_dir / "cv_results_rf_full.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_rf_full.pdf")
 
-run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", y_mode=y_mode,
                           continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols,
                           outfile_cv=output_dir / "cv_results_rf_taxa_only.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_rf_taxa_only.pdf")
 
-run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
+run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest", y_mode=y_mode,
                           continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None,
                           outfile_cv=output_dir / "cv_results_rf_clinical_only.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_rf_clinical_only.pdf")
@@ -421,23 +576,24 @@ run_lasso_logreg_pipeline(X=X, y=y, model_type="random_forest",
 # run_lasso_logreg_pipeline(X=X, y=y, model_type="adaboost", continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None, outfile_cv="cv_results_ada_clinical_only.pkl")
 
 # === Running FC_NN pytorch neural net ===
-X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6)
+X, y, continuous_cols, binary_cols = prepare_ml_data(meta_df, meta_filtered, clr_transform=True, pseudo_count=1e-6, y_mode=y_mode)
 # taxa are already CLR transformed
 taxa_cols = [col for col in X.columns.tolist() if isinstance(col, str) and col.startswith("k__Bacteria")]
 clinical_cols = [col for col in X.columns.tolist() if isinstance(col, str) and not col.startswith("k__Bacteria")]
 
 Xft = X.astype(np.float32)
-run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn",
+yft = y.astype(np.float32) if y_mode == "continuous" else y.astype(int)
+run_lasso_logreg_pipeline(X=Xft, y=yft, model_type="fcnn", y_mode=y_mode,
                           continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=taxa_cols,
                           outfile_cv=output_dir / "cv_results_fcnn_full.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_fcnn_full.pdf")
 
-run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn",
+run_lasso_logreg_pipeline(X=Xft, y=yft, model_type="fcnn", y_mode=y_mode,
                           continuous_cols=None, binary_cols=None, clr_taxa_cols=taxa_cols,
                           outfile_cv=output_dir / "cv_results_fcnn_taxa_only.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_fcnn_taxa_only.pdf")
 
-run_lasso_logreg_pipeline(X=Xft, y=y, model_type="fcnn",
+run_lasso_logreg_pipeline(X=Xft, y=yft, model_type="fcnn", y_mode=y_mode,
                           continuous_cols=continuous_cols, binary_cols=binary_cols, clr_taxa_cols=None,
                           outfile_cv=output_dir / "cv_results_fcnn_clinical_only.pkl",
                           outfile_roc_curve=output_dir / "roc_curve_fcnn_clinical_only.pdf")
@@ -833,10 +989,18 @@ for fold_idx, estimator in enumerate(cv_results["estimator"]):
     torch_model.eval()
 
     # Integrated Gradients on logits of class 1
-    def logits_class1(x):
-        return torch_model(x)[:, 1]  # class 1 logit
+    # def logits_class1(x):
+    #     return torch_model(x)[:, 1]  # class 1 logit
+    if y_mode == "binary":
+        def forward_func(x):
+            return torch_model(x)[:, 1]  # class 1 logit
+    elif y_mode == "continuous":
+        def forward_func(x):
+            return torch_model(x)  # scalar output, already 1D
 
-    ig = IntegratedGradients(logits_class1)
+
+    # ig = IntegratedGradients(logits_class1)
+    ig = IntegratedGradients(forward_func)
     attributions, delta = ig.attribute(
         X_input,
         target=None,
