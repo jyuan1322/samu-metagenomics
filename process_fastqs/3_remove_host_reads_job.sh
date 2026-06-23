@@ -3,53 +3,61 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
-#SBATCH --output=/data/bwh-comppath-seq/jy1008/SaMu/logs/%x_%j.out
-#SBATCH --error=/data/bwh-comppath-seq/jy1008/SaMu/logs/%x_%j.err
-
-# Initialize micromamba for this shell
-eval "$(micromamba shell hook --shell bash)"
-micromamba activate metagen-env
-
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+# =============================================================================
+# 3_remove_host_reads_job.sh — host removal for ONE sample. Submitted once per
+# sample by 3_remove_host_reads_job_submit.sh. Data is organized under an
+# optional SUBFOLD layer (e.g. a sequencing batch) within raw/mapping/
+# host_removed.
+#
+# NOTE: #SBATCH directives can't read shell variables; keep them in sync with
+# config.sh if you change defaults. The --output/--error paths are relative,
+# so submit from the pipeline directory (which should contain a logs/ dir).
+#
+# Usage (via sbatch): 3_remove_host_reads_job.sh <sample_base> <subfold>
+# =============================================================================
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/common.sh"
 
-input_dir="/data/bwh-comppath-seq/jy1008/SaMu/data/metagenomics"
-cpus=8
+activate_env "$METAGEN_ENV"
 
 base="$1"
 subfold="$2"
 
-r1_file="$input_dir/raw/${subfold}/${base}_R1_combined_fastp.fastq.gz"
-r2_file="$input_dir/raw/${subfold}/${base}_R2_combined_fastp.fastq.gz"
+raw_sub="$RAW_DIR/${subfold}"
+mapping_sub="$MAPPING_DIR/${subfold}"
+host_removed_sub="$HOST_REMOVED_DIR/${subfold}"
+mkdir -p "$mapping_sub" "$host_removed_sub"
 
-out_bam="$input_dir/mapping/${subfold}/${base}_bothReadsUnmapped_sorted.bam"
+r1_file="$raw_sub/${base}_R1_combined_fastp.fastq.gz"
+r2_file="$raw_sub/${base}_R2_combined_fastp.fastq.gz"
+out_bam="$mapping_sub/${base}_bothReadsUnmapped_sorted.bam"
 
 if [[ -e "$r1_file" && -e "$r2_file" && ! -e "$out_bam" ]]; then
     echo "Running host removal for sample: $base"
 
-    bowtie2 -p $cpus -x /data/bwh-comppath-seq/databases/GRCh38_noalt_as/GRCh38_noalt_as \
+    bowtie2 -p "$CPUS" -x "$HOST_BOWTIE2_INDEX" \
         -1 "$r1_file" -2 "$r2_file" \
-        -S "$input_dir/mapping/${subfold}/${base}_mapped_and_unmapped.sam"
+        -S "$mapping_sub/${base}_mapped_and_unmapped.sam"
 
-    samtools view -bS "$input_dir/mapping/${subfold}/${base}_mapped_and_unmapped.sam" \
-        > "$input_dir/mapping/${subfold}/${base}_mapped_and_unmapped.bam"
-
-    samtools view -b -f 12 -F 256 "$input_dir/mapping/${subfold}/${base}_mapped_and_unmapped.bam" \
-        > "$input_dir/mapping/${subfold}/${base}_bothReadsUnmapped.bam"
-
-    samtools sort -n -m 5G -@ $cpus "$input_dir/mapping/${subfold}/${base}_bothReadsUnmapped.bam" \
+    samtools view -bS "$mapping_sub/${base}_mapped_and_unmapped.sam" \
+        > "$mapping_sub/${base}_mapped_and_unmapped.bam"
+    samtools view -b -f 12 -F 256 "$mapping_sub/${base}_mapped_and_unmapped.bam" \
+        > "$mapping_sub/${base}_bothReadsUnmapped.bam"
+    samtools sort -n -m 5G -@ "$CPUS" "$mapping_sub/${base}_bothReadsUnmapped.bam" \
         -o "$out_bam"
 
-    samtools fastq -@ $cpus "$out_bam" \
-        -1 "$input_dir/host_removed/${subfold}/${base}_host_removed_R1.fastq.gz" \
-        -2 "$input_dir/host_removed/${subfold}/${base}_host_removed_R2.fastq.gz" \
+    samtools fastq -@ "$CPUS" "$out_bam" \
+        -1 "$host_removed_sub/${base}_host_removed_R1.fastq.gz" \
+        -2 "$host_removed_sub/${base}_host_removed_R2.fastq.gz" \
         -0 /dev/null -s /dev/null -n
 
-    # Optional cleanup
-    rm "$input_dir/mapping/${subfold}/${base}_mapped_and_unmapped.sam" \
-       "$input_dir/mapping/${subfold}/${base}_mapped_and_unmapped.bam" \
-       "$input_dir/mapping/${subfold}/${base}_bothReadsUnmapped.bam"
-
+    rm -f "$mapping_sub/${base}_mapped_and_unmapped.sam" \
+          "$mapping_sub/${base}_mapped_and_unmapped.bam" \
+          "$mapping_sub/${base}_bothReadsUnmapped.bam"
 else
     echo "Input files missing or output already exists for $base, skipping."
 fi
-

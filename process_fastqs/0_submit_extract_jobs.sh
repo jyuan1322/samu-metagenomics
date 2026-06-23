@@ -1,40 +1,37 @@
 #!/bin/bash
+# =============================================================================
+# 0_submit_extract_jobs.sh — submit one SLURM job per tar archive in
+# TAR_FILES; each extracts into its own subdirectory under RAW_DIR. SLURM
+# version of 0_collect_tar_fastqs.sh (which it calls via 0_extract_fastq.sh).
+#
+# Config: TAR_FILES, RAW_DIR, SLURM_PARTITION, SLURM_EXTRACT_TIME/MEM
+# Usage:  ./0_submit_extract_jobs.sh
+# =============================================================================
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/common.sh"
 
-# List of tar files
-TAR_FILES=(
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/ugent_block1_anton_07022025/20231027_AV224503_4520_2-RawData-4520.tar"
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/ugent_block2_anton_07212025/20240327_AV224503_4734_1-RawData-4734.tar"
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/ugent_block3_anton_07022025/20240410_AV224503_4734_2-RawData-4734.tar"
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/ugent_block4_anton_07142025/0240410_AV224503_4734_3-RawData-4734.tar"
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/ugent_block4_anton_07142025/20240502AV224503_4761_1-RawData-4734.tar"
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/nextcloud_anton_06252025/20250124_AV242402_4915_1-RawData-4915.tar"
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/nextcloud_anton_06252025/20250131_AV242402_4915_2-RawData-4915.tar"
-  "/data/bwh-comppath-seq/jy1008/SaMu/data/nextcloud_anton_06252025/20250131_AV242402_4915_3-RawData-4915.tar"
-)
+mkdir -p "$RAW_DIR"
 
-# Output base directory
-DATA_DIR="/data/bwh-comppath-seq/jy1008/SaMu/data/metagenomics/raw"
-mkdir -p "$DATA_DIR"
+if [ "${#TAR_FILES[@]}" -eq 0 ]; then
+    echo "No TAR_FILES configured in config.sh — add tar archive paths and re-run." >&2
+    exit 1
+fi
 
-# Submit a job for each TAR file
 for TAR_FILE in "${TAR_FILES[@]}"; do
-  BASENAME=$(basename "$TAR_FILE" .tar)
-  OUTDIR="$DATA_DIR/$BASENAME"
-  mkdir -p "$OUTDIR"
+    BASENAME=$(basename "$TAR_FILE" .tar)
+    OUTDIR="$RAW_DIR/$BASENAME"
+    mkdir -p "$OUTDIR"
 
-  cat <<EOF > "$OUTDIR/job.sh"
-#!/bin/bash
-#SBATCH --job-name=untar_${BASENAME}
-#SBATCH --output=$OUTDIR/slurm-%j.out
-#SBATCH --error=$OUTDIR/slurm-%j.err
-#SBATCH --partition=bwh_comppath
-#SBATCH --time=3:00:00
-#SBATCH --mem=20G
-
-bash extract_fastq.sh "$TAR_FILE" "$OUTDIR"
-EOF
-
-  sbatch "$OUTDIR/job.sh"
+    log "Submitting extract job for $BASENAME"
+    sbatch --job-name="untar_${BASENAME}" \
+           --output="$OUTDIR/slurm-%j.out" \
+           --error="$OUTDIR/slurm-%j.err" \
+           --partition="$SLURM_PARTITION" \
+           --time="$SLURM_EXTRACT_TIME" \
+           --mem="$SLURM_EXTRACT_MEM" \
+           --wrap="bash '$SCRIPT_DIR/0_extract_fastq.sh' '$TAR_FILE' '$OUTDIR'"
 done
 
-echo "All SLURM jobs submitted."
+log "All SLURM jobs submitted."

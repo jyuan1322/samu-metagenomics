@@ -1,14 +1,26 @@
 #!/bin/bash
+# =============================================================================
+# 3_remove_host_reads_job_submit.sh — submit one host-removal SLURM job per
+# sample found under $RAW_DIR/<subfold>. SLURM version of
+# 3_remove_host_reads.sh.
+#
+# Config: BASE_DIR (and derived dirs)  (see config.sh)
+# Usage:  ./3_remove_host_reads_job_submit.sh <subfold>
+#         <subfold> is the subdirectory under raw/ to process (e.g. a
+#         sequencing batch). Pass "" to operate on the top-level raw/ dir.
+# =============================================================================
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/common.sh"
 
-input_dir="/data/bwh-comppath-seq/jy1008/SaMu/data/metagenomics"
-# subfold="block1" # subfolder under raw, if data is organized in blocks
-subfold="$1"
+subfold="${1:-}"
 
-mkdir -p "$input_dir/mapping/${subfold}" "$input_dir/host_removed/${subfold}" "$input_dir/logs"
+mkdir -p "$MAPPING_DIR/${subfold}" "$HOST_REMOVED_DIR/${subfold}" "$LOG_DIR"
 
-for r1_file in "$input_dir"/raw/"$subfold"/*_R1_combined_fastp.fastq.gz; do
+for r1_file in "$RAW_DIR/$subfold"/*_R1_combined_fastp.fastq.gz; do
+    [ -e "$r1_file" ] || { echo "No fastp reads found in $RAW_DIR/$subfold"; exit 1; }
     base=$(basename "$r1_file" _R1_combined_fastp.fastq.gz)
     echo "Submitting SLURM job for $base"
-    sbatch 3_remove_host_reads_job.sh "$base" "$subfold"
+    sbatch "$SCRIPT_DIR/3_remove_host_reads_job.sh" "$base" "$subfold"
 done
-

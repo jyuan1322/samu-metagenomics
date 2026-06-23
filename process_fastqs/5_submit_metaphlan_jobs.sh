@@ -1,65 +1,45 @@
 #!/bin/bash
+# =============================================================================
+# 5_submit_metaphlan_jobs.sh — submit one MetaPhlAn SLURM job per sample under
+# $HOST_REMOVED_DIR/$SUBFOLD. SLURM version of 5_metaphlan.sh.
+#
+# Config: BASE_DIR, SUBFOLD, METAPHLAN_BOWTIE2_DB, CPUS, METAPHLAN_ENV,
+#         SLURM_METAPHLAN_*  (see config.sh)
+# Usage:  ./5_submit_metaphlan_jobs.sh
+# =============================================================================
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/common.sh"
 
-cpus=8
-input_dir="/data/bwh-comppath-seq/jy1008/SaMu/data/metagenomics"
-subfold="all_merged_fastqs"
-output_dir="$input_dir/metaphlan_out/$subfold"
-log_dir="$input_dir/logs/metaphlan"
+host_removed_sub="$HOST_REMOVED_DIR/$SUBFOLD"
+output_dir="$METAPHLAN_DIR/$SUBFOLD"
+log_dir="$LOG_DIR/metaphlan"
 mkdir -p "$output_dir" "$log_dir"
 
-for r1_file in "$input_dir"/host_removed/"$subfold"/*_host_removed_R1.fastq.gz; do
+for r1_file in "$host_removed_sub"/*_host_removed_R1.fastq.gz; do
+    [ -e "$r1_file" ] || { echo "No host-removed reads found in $host_removed_sub"; exit 1; }
     base=$(basename "$r1_file" _host_removed_R1.fastq.gz)
     out_file="$output_dir/${base}_profile.txt"
 
-    # Skip if output already exists
     if [[ -f "$out_file" ]]; then
         echo "Skipping $base (already completed)"
         continue
     fi
 
-    sbatch <<EOF
-#!/bin/bash
-#SBATCH --job-name=mp_${base}
-#SBATCH --cpus-per-task=$cpus
-#SBATCH --mem=32G
-#SBATCH --time=08:00:00
-#SBATCH --output=$log_dir/${base}.out
-#SBATCH --error=$log_dir/${base}.err
+    r2_file="$host_removed_sub/${base}_host_removed_R2.fastq.gz"
+    comb_file="$host_removed_sub/${base}_host_removed_R1R2_combined.fastq.gz"
 
-export MAMBA_EXE="/PHShome/jy1008/bin/micromamba"
-export MAMBA_ROOT_PREFIX="/PHShome/jy1008/.local/share/mamba"
-
-__mamba_setup="\$("\$MAMBA_EXE" shell hook --shell bash --root-prefix "\$MAMBA_ROOT_PREFIX" 2>/dev/null || true)"
-if [ -n "\$__mamba_setup" ]; then
-    eval "\$__mamba_setup"
-    unset __mamba_setup
-else
-    echo "Failed to init micromamba"
-    exit 1
-fi
-
-micromamba activate metaphlan_env || { echo "Failed to activate env"; exit 1; }
-
-echo "Running MetaPhlAn for \$base"
-
-r1_file="$input_dir/host_removed/$subfold/${base}_host_removed_R1.fastq.gz"
-r2_file="$input_dir/host_removed/$subfold/${base}_host_removed_R2.fastq.gz"
-comb_file="$input_dir/host_removed/$subfold/${base}_host_removed_R1R2_combined.fastq.gz"
-
-gunzip -c "\$r1_file" "\$r2_file" | gzip > "\$comb_file"
-
-metaphlan \\
-    "\$comb_file" \\
-    --input_type fastq \\
-    --bowtie2db /data/bwh-comppath-seq/databases/bowtie2/ \\
-    --nproc $cpus \\
-    -t rel_ab_w_read_stats \\
-    -o "$out_file"
-
-rm "\$comb_file"
-
-echo "Done with \$base"
-EOF
-
+    sbatch --job-name="mp_${base}" \
+           --cpus-per-task="$CPUS" \
+           --mem="$SLURM_METAPHLAN_MEM" \
+           --time="$SLURM_METAPHLAN_TIME" \
+           --partition="$SLURM_PARTITION" \
+           --output="$log_dir/${base}.out" \
+           --error="$log_dir/${base}.err" \
+           --wrap="source '$SCRIPT_DIR/common.sh'; \
+                   MAMBA_EXE='$MAMBA_EXE' MAMBA_ROOT_PREFIX='$MAMBA_ROOT_PREFIX' activate_env '$METAPHLAN_ENV'; \
+                   gunzip -c '$r1_file' '$r2_file' | gzip > '$comb_file'; \
+                   metaphlan '$comb_file' --input_type fastq --bowtie2db '$METAPHLAN_BOWTIE2_DB' --nproc $CPUS -t rel_ab_w_read_stats -o '$out_file'; \
+                   rm -f '$comb_file'"
 done
