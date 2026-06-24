@@ -26,7 +26,8 @@ METADATA_CSV <- "/data/local/jy1008/SaMu/metadata/SaMu_sarcopeniestatus_majorcov
 # ---------------------------------------------------------------------------
 # A single tag appended to dated/versioned outputs so a new run does not
 # overwrite a previous one. Set to "" for no suffix.
-RUN_TAG <- "03132026"
+# RUN_TAG <- "03132026"
+RUN_TAG <- "06242026"
 
 # Intermediates passed between the numbered scripts (written into OUTPUT_DIR).
 META_FILTERED_RDS <- "meta_filtered.rds"   # long-format filtered species table
@@ -59,6 +60,13 @@ META_KEEP_COLS <- c(
 # ---------------------------------------------------------------------------
 # File_ID construction
 # ---------------------------------------------------------------------------
+# 
+# This is intended to correct for the heterogeneous naming convention of the
+# original fastq files. Files in blocks 2,3,4 don't list their SaMu number
+# (the record_id in the metadata csv). For these subjects, the record_id has
+# been matched to the file name using the sample tracking file
+# "SaMu_block2_3_4_DNASampleSheet_13032024_Sample_Requirements.xlsx"
+# 
 # Each sequencing block stores its raw-file reference in a different metadata
 # column, and the sample ID is embedded in that string with a block-specific
 # format. For each block, give the column name and a regex that extracts the

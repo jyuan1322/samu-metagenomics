@@ -16,6 +16,9 @@ suppressPackageStartupMessages({
   library(readr); library(ggplot2); library(stringr)
 })
 
+if (!dir.exists(OUTPUT_DIR)) {
+  dir.create(OUTPUT_DIR, recursive = TRUE)
+}
 setwd(OUTPUT_DIR)
 
 # ---------------------------------------------------------------------------
