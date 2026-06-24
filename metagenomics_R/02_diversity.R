@@ -200,6 +200,7 @@ meta_clean <- meta[!is.na(meta[[GROUP_VAR]]), ]
 bray_clean <- as.dist(as.matrix(bray_dist)[rownames(meta_clean),
                                            rownames(meta_clean)])
 adonis_formula <- as.formula(paste("bray_clean ~", GROUP_VAR))
+set.seed(101)
 adonis_res <- adonis2(adonis_formula, data = meta_clean, permutations = 9999)
 print(adonis_res)
 write.csv(as.data.frame(adonis_res),
