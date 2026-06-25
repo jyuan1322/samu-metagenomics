@@ -16,6 +16,7 @@
 INPUT_DIR <- "/data/local/jy1008/SaMu/metaphlan_out_02102026/all_merged_fastqs"
 
 # Output / working directory. All results (CSVs, plots, .rds) are written here.
+# OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R_extreme_cases"
 OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R"
 
 # Sample metadata CSV.
@@ -28,6 +29,7 @@ METADATA_CSV <- "/data/local/jy1008/SaMu/metadata/SaMu_sarcopeniestatus_majorcov
 # overwrite a previous one. Set to "" for no suffix.
 # RUN_TAG <- "03132026"
 RUN_TAG <- "06242026"
+# RUN_TAG <- "06242026_extreme_cases"
 
 # Intermediates passed between the numbered scripts (written into OUTPUT_DIR).
 META_FILTERED_RDS <- "meta_filtered.rds"   # long-format filtered species table
@@ -107,6 +109,7 @@ BARPLOT_MEAN_ABUND_CUTOFF <- 1.5
 # Binary grouping used throughout (diversity tests, ordination color, DESeq2).
 GROUP_VAR     <- "sarc_status_bin"
 GROUP_LEVELS  <- c("NoSarc", "Sarc")   # first level is the reference
+EXTREME_CASES_ONLY <- FALSE
 
 # Continuous covariates to z-score before DESeq2 (a "<col>_scaled" column is
 # created for each).
@@ -125,3 +128,18 @@ PADJ_CUTOFF <- 0.05
 
 # Plots split species into two facets at this absolute log2 fold change.
 LFC_FACET_CUTOFF <- 2
+
+# ---------------------------------------------------------------------------
+# Ordinal lasso (04_ordinal_lasso.R) — standalone L1 cumulative-logit model on
+# the ORIGINAL ordered sarc_status (0/1/2/3). Independent of EXTREME_CASES_ONLY.
+# ---------------------------------------------------------------------------
+ORDINAL_SEED         <- 222          # reproducible CV fold assignment
+ORDINAL_NFOLDS       <- 5            # K for ordinalNetTune / ordinalNetCV
+ORDINAL_PSEUDO_COUNT <- 1e-6         # CLR pseudo-count (matches Python loader)
+# Covariates entered alongside the CLR taxa (scaled to unit variance).
+ORDINAL_CONT_COVARIATES <- c("age_def", "nutr_score", "bmi")
+ORDINAL_BIN_COVARIATES  <- c("smke", "alco")   # sex is added as sex_bin (0/1)
+# Optionally cap the ordinal outcome so sparse top levels are pooled. With
+# ORDINAL_MAX_LEVEL <- 2, sarc_status values >= 2 collapse into a single "2+"
+# level, giving ordered levels 0 < 1 < 2+ . Set to NA for no collapsing.
+ORDINAL_MAX_LEVEL <- 2

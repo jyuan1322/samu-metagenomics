@@ -34,7 +34,11 @@ if (!is.na(FULLSAMU_COL)) {
   meta_df <- meta_df[meta_df[[FULLSAMU_COL]] == 1, ]
 }
 
-meta_df <- recode_metadata(meta_df)          # smke/alco/sex/sarc_status recode
+meta_df <- recode_metadata(meta_df, extreme_cases_only = EXTREME_CASES_ONLY)          # smke/alco/sex/sarc_status recode
+
+# check where NAs are produced
+sapply(meta_df[c("sarc_status","age_def","bmi","nutr_score")],
+       function(x) sum(is.na(suppressWarnings(as.numeric(as.character(x))))))
 
 write.csv(meta_df,
           tag_filename("metadata_FullSaMu_recoded.csv"),
@@ -48,6 +52,8 @@ meta_df <- meta_df[, META_KEEP_COLS]
 meta_df <- meta_df[complete.cases(meta_df[, COLS_OF_INTEREST]), ]
 message(sprintf("Samples after cohort + complete-case filtering: %d",
                 nrow(meta_df)))
+print("total subjects in each class:")
+table(meta_df$sarc_status)
 
 # ---------------------------------------------------------------------------
 # MetaPhlAn profiles: load only the files for retained subjects

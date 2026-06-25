@@ -18,11 +18,11 @@ SCORING_METRIC = "roc_auc"
 # Metagenomics
 # ---------------------------------------------------------------------------
 METAGENOMICS = {
-    "input_dir": Path("/data/local/jy1008/SaMu/results/latest/metagenomics_R"),
-    "output_dir": Path("/data/local/jy1008/SaMu/results/latest/metagenomics_ml"),
-    "meta_filtered_csv": "meta_filtered_06242026.csv",
-    "meta_df_csv": "meta_df_FullSaMu_06242026.csv",
-    "deseq2_csv": "deseq2_results_06242026.csv",
+    "input_dir": Path("/data/local/jy1008/SaMu/results/latest/metagenomics_R_extreme_cases"),
+    "output_dir": Path("/data/local/jy1008/SaMu/results/latest/metagenomics_ml_extreme_cases"),
+    "meta_filtered_csv": "meta_filtered_06242026_extreme_cases.csv",
+    "meta_df_csv": "meta_df_FullSaMu_06242026_extreme_cases.csv",
+    "deseq2_csv": "deseq2_results_06242026_extreme_cases.csv",
 }
 
 # ---------------------------------------------------------------------------

@@ -43,7 +43,7 @@ build_file_id <- function(df, blocks = FILE_ID_BLOCKS) {
 # metadata coding scheme changes. Kept as one documented function so the
 # encoding assumptions live in a single place.
 # ---------------------------------------------------------------------------
-recode_metadata <- function(df) {
+recode_metadata <- function(df, extreme_cases_only=FALSE) {
   # smoking: any of {1,2,3} -> ever-smoker (1); 0 -> never (0); else NA
   df$smke <- ifelse(df$smke %in% c("1", "2", "3"), 1,
                     ifelse(df$smke == "0", 0, NA))
@@ -61,9 +61,20 @@ recode_metadata <- function(df) {
   message("Converting sarc_status to numeric; non-numeric values become NA")
   df$sarc_status <- suppressWarnings(as.numeric(df$sarc_status))
 
-  # Binarize the grouping variable: > 0 -> Sarc, else NoSarc.
-  df$sarc_status_bin <- ifelse(df$sarc_status > 0, "Sarc", "NoSarc")
-  df$sarc_status_bin <- factor(df$sarc_status_bin, levels = GROUP_LEVELS)
+  # Binarize the grouping variable.
+  if (extreme_cases_only) {
+    # Extreme cases only: sarc_status > 1 -> Sarc, 0 -> NoSarc.
+    # Drop the intermediate sarc_status == 1 samples entirely.
+    message(sum(df$sarc_status == 1, na.rm = TRUE),
+            " intermediate case(s) with sarc_status == 1 dropped (extreme_cases_only)")
+    df <- df[is.na(df$sarc_status) | df$sarc_status != 1, ]
+    df$sarc_status_bin <- ifelse(df$sarc_status > 1, "Sarc", "NoSarc")
+    df$sarc_status_bin <- factor(df$sarc_status_bin, levels = GROUP_LEVELS)
+  } else {
+    # Standard: > 0 -> Sarc, else NoSarc.
+    df$sarc_status_bin <- ifelse(df$sarc_status > 0, "Sarc", "NoSarc")
+    df$sarc_status_bin <- factor(df$sarc_status_bin, levels = GROUP_LEVELS)
+  }
   df
 }
 
