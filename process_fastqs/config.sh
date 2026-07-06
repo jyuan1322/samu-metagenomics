@@ -1,90 +1,83 @@
 #!/bin/bash
 # =============================================================================
-# config.sh — central configuration for the metagenomics preprocessing
-# pipeline (tar extraction -> lane merging -> QC -> host removal ->
-# kraken/bracken -> metaphlan).
+# config_test.sh — test configuration for a single-sample dry run of the
+# MetaPhlAn v31 -> HUMAnN pipeline. Mirrors config.sh, with BASE_DIR and
+# SUBFOLD pointed at a small manually-created test directory instead of the
+# real study data.
 #
-# Source this from every script:
-#   source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
-#
-# Every value below can also be overridden by exporting an env var of the
-# same name before running a script, e.g.:
-#   SUBFOLD=block1 bash run/run_2_qc.sh local
+# Usage: source this INSTEAD of config.sh, e.g.:
+#   CONFIG=config_test.sh bash 5b_metaphlan_v31.sh
+# (only works if your scripts source $CONFIG rather than a hardcoded
+#  config.sh — see note at bottom if they don't yet)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Directory layout
+# Directory layout — test-specific
 # ---------------------------------------------------------------------------
-# BASE_DIR is the project root for this study's data. Everything else is
-# derived from it. Point this at your study before running anything.
-BASE_DIR="${BASE_DIR:-/data/bwh-comppath-seq/jy1008/SaMu/data/metagenomics}"
+BASE_DIR="/data/bwh-comppath-full/databases/test_run"
 
-RAW_DIR="$BASE_DIR/raw"                # combined + QC'd reads
-MAPPING_DIR="$BASE_DIR/mapping"        # bowtie2 host-mapping intermediates
-HOST_REMOVED_DIR="$BASE_DIR/host_removed"
+RAW_DIR="$BASE_DIR/raw"
+MAPPING_DIR="$BASE_DIR/mapping"
+HOST_REMOVED_DIR="/data/bwh-comppath-full/databases/test_SaMu9_host_removed"
 KRAKEN_DIR="$BASE_DIR/kraken_out"
 METAPHLAN_DIR="$BASE_DIR/metaphlan_out"
 LOG_DIR="$BASE_DIR/logs"
 
-# SUBFOLD organizes a sequencing batch/run as a subdirectory under raw/,
-# mapping/, host_removed/, kraken_out/, metaphlan_out/. Set to "" to operate
-# directly on the top-level directories instead.
-SUBFOLD="${SUBFOLD:-all_merged_fastqs}"
+# No subfolder structure for this test — files sit directly in HOST_REMOVED_DIR
+SUBFOLD=""
+
+TAR_FILES=()
 
 # ---------------------------------------------------------------------------
-# Stage 0: raw tar archives to extract fastq.gz files from
+# Reference databases — same as production, no need to duplicate downloads
 # ---------------------------------------------------------------------------
-# Edit this list per study. Each entry is extracted into its own
-# RAW_DIR/<tar basename>/ directory by run_0_extract_fastqs.sh.
-TAR_FILES=(
-  # "/path/to/run1.tar"
-  # "/path/to/run2.tar"
-)
+HOST_BOWTIE2_INDEX="/data/bwh-comppath-seq/databases/GRCh38_noalt_as/GRCh38_noalt_as"
+KRAKEN_DB="/data/bwh-comppath-seq/databases/uhgg_kraken"
+METAPHLAN_BOWTIE2_DB="/data/bwh-comppath-seq/databases/bowtie2"
 
 # ---------------------------------------------------------------------------
-# Reference databases
+# Tool parameters — unchanged from production
 # ---------------------------------------------------------------------------
-HOST_BOWTIE2_INDEX="${HOST_BOWTIE2_INDEX:-/data/bwh-comppath-seq/databases/GRCh38_noalt_as/GRCh38_noalt_as}"
-KRAKEN_DB="${KRAKEN_DB:-/data/bwh-comppath-seq/databases/uhgg_kraken}"
-METAPHLAN_BOWTIE2_DB="${METAPHLAN_BOWTIE2_DB:-/data/bwh-comppath-seq/databases/bowtie2}"
-
-# ---------------------------------------------------------------------------
-# Tool parameters
-# ---------------------------------------------------------------------------
-BRACKEN_READ_LEN="${BRACKEN_READ_LEN:-150}"
-BRACKEN_LEVEL="${BRACKEN_LEVEL:-S}"
-BRACKEN_THRESHOLD="${BRACKEN_THRESHOLD:-10}"
-KRAKEN_CONFIDENCE="${KRAKEN_CONFIDENCE:-0.1}"
-KRAKEN_MIN_BASEQ="${KRAKEN_MIN_BASEQ:-20}"
+BRACKEN_READ_LEN="150"
+BRACKEN_LEVEL="S"
+BRACKEN_THRESHOLD="10"
+KRAKEN_CONFIDENCE="0.1"
+KRAKEN_MIN_BASEQ="20"
 
 # ---------------------------------------------------------------------------
-# Compute resources
+# Compute resources — lighter, since this is a tiny subsampled test
 # ---------------------------------------------------------------------------
-CPUS="${CPUS:-8}"
+CPUS="2"
 
-# SLURM defaults, used by run/*.sh wrappers when invoked in "slurm" mode.
-SLURM_PARTITION="${SLURM_PARTITION:-bwh_comppath}"
-SLURM_ACCOUNT="${SLURM_ACCOUNT:-}"            # leave empty if not required
+SLURM_PARTITION="bwh_comppath"
+SLURM_ACCOUNT=""
 
-SLURM_EXTRACT_TIME="${SLURM_EXTRACT_TIME:-3:00:00}"
-SLURM_EXTRACT_MEM="${SLURM_EXTRACT_MEM:-20G}"
+SLURM_METAPHLAN_TIME="0:30:00"
+SLURM_METAPHLAN_MEM="8G"
 
-SLURM_QC_TIME="${SLURM_QC_TIME:-3:00:00}"
-SLURM_QC_MEM="${SLURM_QC_MEM:-16G}"
+SLURM_METAPHLAN_V31_TIME="0:30:00"
+SLURM_METAPHLAN_V31_MEM="8G"
 
-SLURM_HOST_REMOVAL_TIME="${SLURM_HOST_REMOVAL_TIME:-4:00:00}"
-SLURM_HOST_REMOVAL_MEM="${SLURM_HOST_REMOVAL_MEM:-32G}"
-
-SLURM_KRAKEN_TIME="${SLURM_KRAKEN_TIME:-4:00:00}"
-SLURM_KRAKEN_MEM="${SLURM_KRAKEN_MEM:-32G}"
-
-SLURM_METAPHLAN_TIME="${SLURM_METAPHLAN_TIME:-8:00:00}"
-SLURM_METAPHLAN_MEM="${SLURM_METAPHLAN_MEM:-32G}"
+SLURM_HUMANN_TIME="1:00:00"
+SLURM_HUMANN_MEM="16G"
 
 # ---------------------------------------------------------------------------
-# Conda / micromamba environments
+# Conda / micromamba environments — same as production
 # ---------------------------------------------------------------------------
-MAMBA_EXE="${MAMBA_EXE:-/PHShome/jy1008/bin/micromamba}"
-MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-/PHShome/jy1008/.local/share/mamba}"
-METAGEN_ENV="${METAGEN_ENV:-metagen-env}"        # fastp, fastqc, bowtie2, samtools, kraken2, bracken
-METAPHLAN_ENV="${METAPHLAN_ENV:-metaphlan_env}"  # metaphlan
+MAMBA_EXE="/PHShome/jy1008/bin/micromamba"
+MAMBA_ROOT_PREFIX="/PHShome/jy1008/.local/share/mamba"
+METAGEN_ENV="metagen-env"
+METAPHLAN_ENV="metaphlan_env"
+
+# ---------------------------------------------------------------------------
+# MetaPhlAn v31 (pre-SGB) + HUMAnN — same databases/envs as production
+# ---------------------------------------------------------------------------
+METAPHLAN_V31_ENV="metaphlan31_env"
+METAPHLAN_V31_BOWTIE2_DB="/data/bwh-comppath-full/databases/humann/metaphlan_v31"
+METAPHLAN_V31_INDEX="mpa_v31_CHOCOPhlAn_201901"
+METAPHLAN_V31_DIR="$BASE_DIR/metaphlan_v31_out"
+
+HUMANN_DIR="$BASE_DIR/humann_out"
+HUMANN_CHOCOPHLAN_DB="/data/bwh-comppath-full/databases/humann/chocophlan/chocophlan"
+HUMANN_UNIREF_DB="/data/bwh-comppath-full/databases/humann/uniref/uniref"
+HUMANN_ENV="humann39_env"
