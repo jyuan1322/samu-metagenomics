@@ -109,7 +109,8 @@ FILE_ID_REGEXES <- c(
 # ---------------------------------------------------------------------------
 # Minimum mean relative abundance (fraction, not %; HUMAnN relab sums to 1.0
 # per sample), computed over samples where the feature is nonzero.
-MIN_MEAN_ABUNDANCE <- 1e-4
+# MIN_MEAN_ABUNDANCE <- 1e-4
+MIN_MEAN_ABUNDANCE <- 1e-5
 
 # Minimum prevalence: fraction of samples in which the feature is nonzero.
 MIN_PREVALENCE <- 0.10
@@ -118,7 +119,7 @@ MIN_PREVALENCE <- 0.10
 # pathways/gene families that are abundant in nearly every sample but don't
 # vary between samples — high abundance, low information for an association
 # test. Tune against abundance_vs_cv.png from 01_load_and_filter.R.
-MIN_CV <- 0.1
+MIN_CV_PERCENTILE <- 50
 
 # ---------------------------------------------------------------------------
 # Elbow plot sweeps (diagnostic for choosing the three thresholds above) —
@@ -132,14 +133,49 @@ MIN_CV <- 0.1
 # orders of magnitude rather than metagenomics_R's ~0-2% range.
 ELBOW_ABUND_THRESHOLDS <- 10 ^ seq(-6, -1, length.out = 60)
 
-# Coefficient-of-variation thresholds to sweep.
-ELBOW_CV_THRESHOLDS <- seq(0, 3, by = 0.05)
+# CV thresholds to sweep, expressed as a percentile ("keep the top P% most
+# variable features") rather than a raw CV value — matches your advisor's
+# prior convention (e.g. "top 50%") and is dataset-relative, unlike a raw CV
+# number which depends on the scale/shape of this particular distribution.
+ELBOW_CV_PERCENTILES <- seq(1, 100, by = 1)
 
 # Minimum-prevalence *fractions* compared as separate lines on both elbow
 # plots (converted internally to a sample count: ceiling(fraction * n_samples)).
 # Fractions rather than metagenomics_R's raw counts (c(1,5,10,20)) since this
 # config's own MIN_PREVALENCE is already fraction-based.
-ELBOW_PREVALENCE_FRACTIONS <- c(0, 0.05, 0.10, 0.20, 0.50)
+ELBOW_PREVALENCE_FRACTIONS <- c(0.05, 0.10, 0.20, 0.50)
+
+# ---------------------------------------------------------------------------
+# Pathway hierarchy (03_pathway_hierarchy.R)
+# ---------------------------------------------------------------------------
+# Tab-delimited export of the BioCyc SmartTable built manually on biocyc.org
+# (scoped to MetaCyc, not E. coli — see the "orgid" caveat from setup) with
+# chained "Ontology - direct parents of entity" transform columns applied to
+# surviving_pathway_ids.txt. Update this path after each export.
+PATHWAY_ONTOLOGY_EXPORT_TSV <- "/data/local/jy1008/SaMu/results/latest/humann_R/pathway_ontology_export.tsv"
+ 
+# The domain-meaningful root of MetaCyc's pathway ontology. Ancestor chains
+# are truncated here — everything above this in the export
+# (Generalized-Reactions, FRAMES, THINGS) is generic Pathway-Tools framework
+# scaffolding, not a meaningful pathway category.
+ROOT_CLASS_NAME <- "Pathways"
+
+# ---------------------------------------------------------------------------
+# Redundancy checks (folded into 03_pathway_hierarchy.R)
+# ---------------------------------------------------------------------------
+# Optional: tab-delimited export of a BioCyc SmartTable with a "Sub-Pathways"
+# transform column applied to redundancy_structural_candidates.csv's IDs
+# (pathways flagged as superpathways). If set and the file exists, confirms
+# which surviving pathways are actual sub-pathways of a surviving
+# superpathway. Leave as NA to skip this cross-check and just get the
+# candidate list for manual follow-up.
+SUB_PATHWAYS_EXPORT_TSV <- NA
+ 
+# Minimum |Spearman correlation| between two pathways' filtered abundance
+# profiles to flag them as statistically redundant. Not a universal
+# standard — check redundancy_cor_histogram.png first to see whether this
+# cuts off a distinct tail for your data before trusting it.
+REDUNDANCY_COR_THRESHOLD <- 0.9
 
 # ---------------------------------------------------------------------------
 # MaAsLin3 model

@@ -64,67 +64,117 @@ meta_aligned <- meta_df[match(shared_ids, meta_df$File_ID), ]
 stopifnot(identical(colnames(mat), meta_aligned$File_ID))
 
 # ---------------------------------------------------------------------------
-# Elbow plot 1: features retained vs. abundance threshold, one line per
-# minimum-prevalence requirement. Computed directly on the matrix
-# (rowSums(mat >= threshold)) rather than via a long-format pivot — a
-# long-format pivot of the full feature x sample matrix would be
-# prohibitively large for genefamilies. The threshold loop is outer and the
-# prevalence-fraction loop is inner so each threshold only needs one pass
-# over the matrix, reused across all prevalence fractions.
+# Feature stats (computed here, ahead of the elbow plots below, since the
+# CV-filtered abundance elbow needs st$cv to know which features pass a given
+# CV percentile).
 # ---------------------------------------------------------------------------
-n_samples <- ncol(mat)
-elbow_abund_df <- map_dfr(ELBOW_ABUND_THRESHOLDS, function(th) {
-  counts_above <- rowSums(mat >= th)
-  map_dfr(ELBOW_PREVALENCE_FRACTIONS, function(p) {
-    min_samples <- ceiling(p * n_samples)
-    tibble(threshold = th, prevalence_frac = p,
-           FeaturesRetained = sum(counts_above >= min_samples))
-  })
-})
+st <- feature_stats(mat)
+valid_cv <- st$cv[!is.na(st$cv)]
 
-p_elbow_abund <- ggplot(elbow_abund_df,
-                        aes(threshold, FeaturesRetained, color = factor(prevalence_frac))) +
+# MIN_CV is now derived from the data as a percentile (MIN_CV_PERCENTILE in
+# config.R), not a hardcoded raw value — "keep the top P% most variable
+# features," matching your advisor's convention. unname() strips the
+# quantile()-added percentile label (e.g. "50%") so MIN_CV is a plain number
+# for use in sprintf()/comparisons downstream.
+MIN_CV <- unname(quantile(valid_cv, probs = 1 - MIN_CV_PERCENTILE / 100, na.rm = TRUE))
+message(sprintf("MIN_CV derived from data: top %d%% -> CV >= %.4f", MIN_CV_PERCENTILE, MIN_CV))
+
+# ---------------------------------------------------------------------------
+# Elbow plot 2 (computed before plot 1 so plot 1 can reuse its CV cutoff):
+# features retained vs. CV threshold, expressed as a percentile ("keep the
+# top P% most variable features") rather than a raw CV value — matches your
+# advisor's prior convention (e.g. "top 50%") and is dataset-relative, unlike
+# a raw CV number tied to this dataset's particular scale/shape. One line per
+# minimum-prevalence requirement.
+# ---------------------------------------------------------------------------
+elbow_cv_df <- expand_grid(
+  top_pct = ELBOW_CV_PERCENTILES,
+  prevalence_frac = ELBOW_PREVALENCE_FRACTIONS
+) %>%
+  mutate(FeaturesRetained = map2_int(top_pct, prevalence_frac, ~ {
+    cv_cutoff <- quantile(valid_cv, probs = 1 - .x / 100, na.rm = TRUE)
+    sum(!is.na(st$cv) & st$cv >= cv_cutoff & st$prevalence >= .y)
+  }))
+
+p_elbow_cv <- ggplot(elbow_cv_df,
+                     aes(top_pct, FeaturesRetained, color = factor(prevalence_frac))) +
   geom_line(linewidth = 1.1) +
+  geom_vline(xintercept = MIN_CV_PERCENTILE, color = "black", linetype = "dashed") +
+  theme_minimal() +
+  labs(x = "CV threshold, as \"keep top P% most variable\" (%)",
+       y = sprintf("Number of %s features passing filter", FEATURE_TABLE),
+       color = "Min. prevalence\n(fraction of samples)",
+       title = "Elbow plot for CV filtering (percentile-based)")
+ggsave(tag_filename("elbow_plot_cv.pdf"), p_elbow_cv, width = 10, height = 6)
+# ggsave(tag_filename("elbow_plot_cv.png"), p_elbow_cv, width = 10, height = 6, dpi = 300)
+
+# ---------------------------------------------------------------------------
+# Elbow plot 1: features retained vs. mean-abundance threshold, one line per
+# minimum-prevalence requirement, drawn twice — once on the full feature set
+# (solid lines) and once restricted to features passing the top
+# MIN_CV_PERCENTILE% CV cutoff (dotted lines) — so you can see directly how
+# much the CV filter shifts the abundance elbow, rather than inspecting the
+# two filters in isolation.
+#
+# IMPORTANT: this must use the exact same per-feature quantities as
+# filter_by_abundance_cv() — st$mean_abund (mean over NONZERO samples only)
+# and st$prevalence (fraction nonzero, independent of any abundance
+# threshold) — rather than a raw per-sample "value >= threshold" count.
+# An earlier version of this plot swept rowSums(mat >= threshold) instead,
+# which answers a different question ("in how many samples does the RAW
+# value clear this threshold, jointly with a prevalence requirement") than
+# what the actual filter checks ("is this feature's mean-of-nonzero-values
+# above the threshold, evaluated independently of prevalence"). Those give
+# different feature counts at the "same" threshold/prevalence_frac pair, so
+# the plot wasn't a faithful preview of what filter_by_abundance_cv() would
+# actually keep. Using st$mean_abund/st$prevalence directly (same as the CV
+# elbow already does with st$cv) fixes that — and is also much cheaper, since
+# it reuses the already-computed per-feature stats instead of re-scanning the
+# full matrix once per threshold.
+# ---------------------------------------------------------------------------
+label_no_cv <- "No CV filter"
+label_cv    <- sprintf("CV filter: top %d%%", MIN_CV_PERCENTILE)
+
+elbow_abund_df <- expand_grid(
+  threshold = ELBOW_ABUND_THRESHOLDS,
+  prevalence_frac = ELBOW_PREVALENCE_FRACTIONS
+) %>%
+  mutate(FeaturesRetained = map2_int(threshold, prevalence_frac, ~ {
+    sum(!is.na(st$mean_abund) & st$mean_abund >= .x & st$prevalence >= .y)
+  }), cv_filter = label_no_cv)
+
+elbow_abund_cv_df <- expand_grid(
+  threshold = ELBOW_ABUND_THRESHOLDS,
+  prevalence_frac = ELBOW_PREVALENCE_FRACTIONS
+) %>%
+  mutate(FeaturesRetained = map2_int(threshold, prevalence_frac, ~ {
+    sum(!is.na(st$mean_abund) & st$mean_abund >= .x & st$prevalence >= .y &
+        !is.na(st$cv) & st$cv >= MIN_CV)
+  }), cv_filter = label_cv)
+
+elbow_abund_combined <- bind_rows(elbow_abund_df, elbow_abund_cv_df)
+
+p_elbow_abund <- ggplot(elbow_abund_combined,
+                        aes(threshold, FeaturesRetained,
+                            color = factor(prevalence_frac), linetype = cv_filter)) +
+  geom_line(linewidth = 1.1) +
+  scale_linetype_manual(values = setNames(c("solid", "dotted"), c(label_no_cv, label_cv)), name = NULL) +
   scale_x_log10() +
   geom_vline(xintercept = MIN_MEAN_ABUNDANCE, color = "black", linetype = "dashed") +
   theme_minimal() +
   labs(x = "Relative abundance threshold (log10 scale)",
        y = sprintf("Number of %s features passing filter", FEATURE_TABLE),
        color = "Min. prevalence\n(fraction of samples)",
-       title = "Elbow plot for abundance filtering")
+       title = sprintf("Elbow plot for abundance filtering, with/without top %d%% CV filter",
+                       MIN_CV_PERCENTILE))
 ggsave(tag_filename("elbow_plot_abundance.pdf"), p_elbow_abund, width = 10, height = 6)
 # ggsave(tag_filename("elbow_plot_abundance.png"), p_elbow_abund, width = 10, height = 6, dpi = 300)
 
 # ---------------------------------------------------------------------------
-# Elbow plot 2: features retained vs. CV threshold, one line per
-# minimum-prevalence requirement.
-# ---------------------------------------------------------------------------
-st <- feature_stats(mat)
-
-elbow_cv_df <- expand_grid(
-  threshold = ELBOW_CV_THRESHOLDS,
-  prevalence_frac = ELBOW_PREVALENCE_FRACTIONS
-) %>%
-  mutate(FeaturesRetained = map2_int(threshold, prevalence_frac, ~ {
-    sum(!is.na(st$cv) & st$cv >= .x & st$prevalence >= .y)
-  }))
-
-p_elbow_cv <- ggplot(elbow_cv_df,
-                     aes(threshold, FeaturesRetained, color = factor(prevalence_frac))) +
-  geom_line(linewidth = 1.1) +
-  geom_vline(xintercept = MIN_CV, color = "black", linetype = "dashed") +
-  theme_minimal() +
-  labs(x = "Coefficient of variation threshold",
-       y = sprintf("Number of %s features passing filter", FEATURE_TABLE),
-       color = "Min. prevalence\n(fraction of samples)",
-       title = "Elbow plot for CV filtering")
-ggsave(tag_filename("elbow_plot_cv.pdf"), p_elbow_cv, width = 10, height = 6)
-# ggsave(tag_filename("elbow_plot_cv.png"), p_elbow_cv, width = 10, height = 6, dpi = 300)
-
-# ---------------------------------------------------------------------------
-# Feature stats + diagnostic plot (same role as the elbow plot in
-# metagenomics_R/01_load_and_filter.R — look at this before trusting the
-# cutoffs in config.R)
+# Feature stats scatter (mean abundance vs. CV directly, both axes
+# continuous) — a second, complementary view to the two elbow plots above:
+# the elbow plots show retained *counts* as thresholds sweep, this shows
+# every feature's actual position relative to both cutoffs at once.
 # ---------------------------------------------------------------------------
 write.csv(st, tag_filename("feature_stats.csv"), row.names = FALSE)
 
@@ -160,7 +210,7 @@ p_hist_mean <- ggplot(st, aes(mean_abund)) +
        y = "Number of features",
        title = sprintf("%s: distribution of per-feature mean abundance", FEATURE_TABLE))
 ggsave(tag_filename("abundance_histogram_mean.pdf"), p_hist_mean, width = 8, height = 6)
-ggsave(tag_filename("abundance_histogram_mean.png"), p_hist_mean, width = 8, height = 6, dpi = 300)
+# ggsave(tag_filename("abundance_histogram_mean.png"), p_hist_mean, width = 8, height = 6, dpi = 300)
 
 raw_vals <- mat[mat > 0]
 p_hist_raw <- ggplot(data.frame(abund = raw_vals), aes(abund)) +
@@ -172,9 +222,8 @@ p_hist_raw <- ggplot(data.frame(abund = raw_vals), aes(abund)) +
        y = "Count",
        title = sprintf("%s: distribution of all nonzero abundance values", FEATURE_TABLE))
 ggsave(tag_filename("abundance_histogram_raw.pdf"), p_hist_raw, width = 8, height = 6)
-ggsave(tag_filename("abundance_histogram_raw.png"), p_hist_raw, width = 8, height = 6, dpi = 300)
+# ggsave(tag_filename("abundance_histogram_raw.png"), p_hist_raw, width = 8, height = 6, dpi = 300)
 rm(raw_vals)  # can be large for genefamilies; drop once the plot is built
-
 
 # ---------------------------------------------------------------------------
 # Apply the filter
@@ -192,4 +241,7 @@ if (nrow(res$mat) == 0) {
 saveRDS(res$mat, FILTERED_FEATURES_RDS)
 saveRDS(meta_aligned, META_ALIGNED_RDS)
 
+writeLines(rownames(res$mat), tag_filename("surviving_pathway_ids_desc.txt"))
+pathway_ids_clean <- trimws(sub(":.*$", "", rownames(res$mat)))
+writeLines(pathway_ids_clean, tag_filename("surviving_pathway_ids_only.txt"))
 message(sprintf("01_load_and_filter.R complete. Output in: %s", OUTPUT_DIR))
