@@ -17,7 +17,7 @@ INPUT_DIR <- "/data/local/jy1008/SaMu/metaphlan_out_02102026/all_merged_fastqs"
 
 # Output / working directory. All results (CSVs, plots, .rds) are written here.
 # OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R_extreme_cases"
-OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R"
+OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R_test2"
 
 # Sample metadata CSV.
 METADATA_CSV <- "/data/local/jy1008/SaMu/metadata/SaMu_sarcopeniestatus_majorcovariates_v13_16012026.csv"
@@ -110,6 +110,7 @@ BARPLOT_MEAN_ABUND_CUTOFF <- 1.5
 GROUP_VAR     <- "sarc_status_bin"
 GROUP_LEVELS  <- c("NoSarc", "Sarc")   # first level is the reference
 EXTREME_CASES_ONLY <- FALSE
+# EXTREME_CASES_ONLY <- TRUE
 
 # Continuous covariates to z-score before DESeq2 (a "<col>_scaled" column is
 # created for each).

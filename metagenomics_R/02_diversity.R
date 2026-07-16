@@ -195,6 +195,16 @@ ggsave(tag_filename("beta_diversity_group.pdf"), p, width = 6, height = 6)
 ggsave(tag_filename("beta_diversity_group.png"), p,
        width = 6, height = 6, dpi = 300)
 
+# for now, hard code plotting of numeric sarc score
+sample_data(ps)$sarc_status_visual <- factor(sample_data(ps)$sarc_status)
+
+p <- plot_ordination(ps, ord, color = "sarc_status_visual") +
+  geom_point(size = 3) + theme_minimal() +
+  scale_color_viridis_d(option = "plasma")
+ggsave(tag_filename("beta_diversity_sarc.pdf"), p, width = 6, height = 6)
+ggsave(tag_filename("beta_diversity_sarc.png"), p,
+       width = 6, height = 6, dpi = 300)
+
 meta <- data.frame(sample_data(ps))
 meta_clean <- meta[!is.na(meta[[GROUP_VAR]]), ]
 bray_clean <- as.dist(as.matrix(bray_dist)[rownames(meta_clean),
