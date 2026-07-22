@@ -95,7 +95,10 @@ load_wide <- function() {
       column_to_rownames("Sample") %>% t() %>% as.data.frame() %>%
       rownames_to_column("name")
   }) %>%
-    reduce(full_join, by = "name") %>%      # shared features merge; unique -> NA
+    purrr::reduce(full_join, by = "name") %>%   # shared features merge; unique -> NA
+    # NOTE: must be namespaced — DEP2 loads S4Vectors/IRanges, which define
+    # their own reduce() generic (for Ranges objects) that masks
+    # purrr::reduce once DEP2 is attached.
     as.data.frame()
   wide$ID <- wide$name
   # Unify with metadata labels by removing underscores from sample column names.
@@ -109,6 +112,99 @@ loaded <- switch(cfg$loader,
                  stop("Unknown PROTEOMICS$loader: ", cfg$loader))
 combined_wide <- loaded$wide
 ecols <- loaded$ecols
+
+# ---------------------------------------------------------------------------
+# Internal-standard normalization (technical/injection normalization),
+# applied to raw sample intensities before DEP2's own filter_se/normalize_vsn
+# step below. Divides every feature's intensity in a sample by that sample's
+# internal-standard intensity, correcting for sample-to-sample differences in
+# injection volume / ionization efficiency. A pseudocount is added to each
+# raw value BEFORE dividing (not to the standard itself), so a feature that
+# was genuinely undetected (0) in a sample stays a clean 0 after
+# normalization rather than becoming undefined.
+#
+# NOTE on logging: normalize_vsn() a few lines below already applies its own
+# variance-stabilizing (glog-like) log transform to these divided values, so
+# this function does NOT log-transform by default
+# (cfg$internal_standard_log = FALSE) — logging here as well would
+# log-transform twice and distort the scale VSN expects. Only set
+# internal_standard_log = TRUE if you bypass normalize_vsn downstream.
+#
+# The standard is matched by substring (not exact equality) against the
+# ID column, since feature names carry a bracketed ID/RT wrapper (e.g.
+# "[10394] 4-Nitrobenzoic acid, TMS derivative [12.345]") that a short,
+# human-typed standard name in config.R won't reproduce exactly. Errors
+# loudly, listing candidates, on zero or multiple matches — silently
+# normalizing to the wrong feature would be a much worse failure mode than
+# stopping here.
+# ---------------------------------------------------------------------------
+normalize_to_internal_standard <- function(wide, ecols, standard_feature,
+                                           pseudocount = 1, log_transform = FALSE) {
+  std_row <- grep(standard_feature, wide$ID, fixed = TRUE)
+  if (length(std_row) == 0) {
+    stop("internal_standard '", standard_feature, "' matched no feature in the ",
+        "ID column. First 10 features present: ",
+        paste(head(wide$ID, 10), collapse = " | "))
+  }
+  if (length(std_row) > 1) {
+    stop("internal_standard '", standard_feature, "' matched ", length(std_row),
+        " features — must match exactly one. Matches: ",
+        paste(wide$ID[std_row], collapse = " | "))
+  }
+
+  std_vals <- as.numeric(wide[std_row, ecols])
+  names(std_vals) <- colnames(wide)[ecols]
+  bad <- names(std_vals)[is.na(std_vals) | std_vals <= 0]
+  if (length(bad) > 0) {
+    stop("internal_standard '", standard_feature, "' has zero/NA intensity in ",
+        "sample(s): ", paste(bad, collapse = ", "),
+        " — cannot normalize those samples by division. Investigate before proceeding.")
+  }
+
+  mat_raw <- as.matrix(wide[, ecols, drop = FALSE])
+  # Preserve missing cells (originally 0 or NA) as NA — not as 0 — after
+  # normalization. Two things depend on this:
+  #   1. DEP2's make_se() log2-transforms the assay at construction. A
+  #      literal 0 becomes log2(0) = -Inf, not NA.
+  #   2. The heatmap code downstream does
+  #      scaled_mat <- t(scale(t(log10(assay(se_filt) + 1e-6)))): scale()
+  #      is NA-aware (excludes NA/NaN via na.rm internally) but NOT
+  #      -Inf-aware — a single -Inf in a feature's row drags its mean to
+  #      -Inf and SD to NaN, poisoning the z-score for every sample in that
+  #      row, not just the missing cell. Real NA propagates cleanly through
+  #      both the log2 and log10 steps and is excluded correctly by
+  #      scale(), matching how the pipeline already behaved before this
+  #      normalization step existed (missingness arriving as genuine NA
+  #      from full_join across batch files with different feature panels).
+  missing_mask <- is.na(mat_raw) | (mat_raw == 0)
+
+  std_mat <- matrix(std_vals[colnames(mat_raw)], nrow = nrow(mat_raw),
+                    ncol = ncol(mat_raw), byrow = TRUE)
+  mat_norm <- (mat_raw + pseudocount) / std_mat
+  if (log_transform) mat_norm <- log2(mat_norm)
+  mat_norm[missing_mask] <- NA_real_
+
+  wide[, ecols] <- mat_norm
+
+  matched_id <- wide$ID[std_row]
+  # Drop the standard's own row so it isn't tested/clustered as if it were a
+  # biological feature downstream.
+  wide <- wide[-std_row, , drop = FALSE]
+
+  message(sprintf(
+    "Normalized to internal standard '%s' (matched: '%s'; pseudocount=%s, log_transform=%s); preserved %d/%d cells as NA (originally 0/NA in raw data, untouched by normalization); dropped standard's own row (%d features remain).",
+    standard_feature, matched_id, pseudocount, log_transform,
+    sum(missing_mask), length(missing_mask), nrow(wide)))
+  wide
+}
+
+if (!is.null(cfg$internal_standard) && !is.na(cfg$internal_standard)) {
+  combined_wide <- normalize_to_internal_standard(
+    combined_wide, ecols, cfg$internal_standard,
+    pseudocount = cfg$internal_standard_pseudocount,
+    log_transform = cfg$internal_standard_log
+  )
+}
 
 # ---------------------------------------------------------------------------
 # Metadata -> coldata aligned to the sample columns
@@ -209,7 +305,15 @@ dev.off()
 # ---------------------------------------------------------------------------
 # Heatmap of top features by DE p-value
 # ---------------------------------------------------------------------------
-log_mat    <- log10(assay(se_filt) + 1e-6)
+# NOTE: assay(se_filt) is already log2-transformed — DEP2's make_se() does
+# this at SE construction (see comments on normalize_to_internal_standard()
+# above). Do NOT log-transform again here: a second log10() was harmless
+# when raw intensities were always >> 1 (log2 of them stayed positive,
+# so log10(positive + 1e-6) was still well-defined) but breaks once values
+# can be normalized ratios below 1 (log2 goes negative) — log10() of a
+# negative number is NaN, which is exactly what turned most of the heatmap
+# gray after adding internal-standard normalization.
+log_mat    <- assay(se_filt)
 scaled_mat <- t(scale(t(log_mat)))
 
 pcol <- paste0(cfg$de_test, "_p.val")
@@ -227,15 +331,21 @@ ha <- HeatmapAnnotation(
 col_fun <- colorRamp2(c(min(scaled_top, na.rm = TRUE),
                         max(scaled_top, na.rm = TRUE)), c("black", "red"))
 
+# se_filt is pre-imputation, so scaled_top can still contain NAs. dist()
+# chokes on those, so cluster on a zero-filled copy while still displaying
+# (and gray-coloring) the real NAs in the heatmap itself.
+mat_for_clust <- scaled_top
+mat_for_clust[is.na(mat_for_clust)] <- 0
+
 pdf(file.path(res_dir, paste0(cfg$experiment_name, "_heatmap.pdf")),
     width = 15, height = 12)
 draw(Heatmap(scaled_top, col = col_fun, na_col = "gray80",
              show_row_names = TRUE, row_names_side = "left",
              row_names_gp = gpar(fontsize = 10),
-             name = "scaled Log10(Intensity)", top_annotation = ha,
+             name = "scaled Log2(Intensity)", top_annotation = ha,
              show_column_names = TRUE, cluster_columns = FALSE,
              column_order = order(colnames(scaled_top)),
-             clustering_distance_rows = "euclidean",
+             clustering_distance_rows = function(x) dist(mat_for_clust),
              clustering_method_rows = "complete",
              column_title = "Samples", row_title = "Features"))
 dev.off()

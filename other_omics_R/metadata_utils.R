@@ -89,7 +89,11 @@ load_samu_metadata <- function(path,
     if (length(missing) > 0)
       warning("Requested keep_cols not in metadata: ",
               paste(missing, collapse = ", "))
-    df <- df[, intersect(keep_cols, names(df)), drop = FALSE]
+    # Always retain label (added above, if requested) and fullsamu_col (needed
+    # for the cohort filter just below), even if the caller's keep_cols didn't
+    # explicitly list them.
+    always_keep <- c(if (add_label) "label", if (!is.na(fullsamu_col)) fullsamu_col)
+    df <- df[, intersect(union(keep_cols, always_keep), names(df)), drop = FALSE]
   }
 
   if (!is.na(fullsamu_col) && fullsamu_col %in% names(df)) {
