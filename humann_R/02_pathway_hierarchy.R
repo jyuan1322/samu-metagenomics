@@ -1,5 +1,5 @@
 # =============================================================================
-# 03_pathway_hierarchy.R
+# 02_pathway_hierarchy.R
 #
 # Parse the BioCyc SmartTable export of chained "Ontology - direct parents of
 # entity" columns (built manually on biocyc.org, scoped to MetaCyc, from
@@ -35,7 +35,7 @@
 #   redundancy_cor_histogram.png/pdf   — distribution of pairwise correlations, to sanity-check
 #                                           REDUNDANCY_COR_THRESHOLD isn't arbitrary for this data
 #
-# Run from this directory, after 01_load_and_filter.R:  Rscript 03_pathway_hierarchy.R
+# Run from this directory, after 01_load_and_filter.R:  Rscript 02_pathway_hierarchy.R
 # =============================================================================
 source("config.R")
 source("utils.R")

@@ -10,6 +10,7 @@ suppressPackageStartupMessages({
   library(readr)
   library(tools)
   library(tibble)
+  library(jsonlite)
 })
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,80 @@ filter_by_abundance_cv <- function(mat, min_abund, min_prev, min_cv) {
     stats = st,
     kept_ids = keep
   )
+}
+
+# ---------------------------------------------------------------------------
+# find_density_valley — locate the local minimum in a kernel density estimate
+# of log10(x) sitting between its two tallest, sufficiently-separated peaks.
+# Used to find a data-driven filtering threshold when a diagnostic histogram
+# (e.g. abundance_histogram_mean.png) looks bimodal — the valley between two
+# real populations of features is a more defensible cutoff than a threshold
+# borrowed from a different tool/dataset (see abundance_histogram_mean.png
+# discussion: MIN_MEAN_ABUNDANCE from MaAsLin2's tutorial can land anywhere
+# relative to this dataset's actual distribution, including right on a peak).
+#
+# min_peak_separation is in log10 units — guards against picking two small
+# adjacent bumps from density-estimation noise as if they were the real modes.
+# Returns NA (with a warning) if fewer than two well-separated peaks are found.
+# ---------------------------------------------------------------------------
+find_density_valley <- function(x, min_peak_separation = 0.5) {
+  x <- x[!is.na(x) & x > 0]
+  log_x <- log10(x)
+  d <- density(log_x, n = 1024)
+
+  is_peak <- c(FALSE, diff(sign(diff(d$y))) == -2, FALSE)
+  peak_idx <- which(is_peak)
+  if (length(peak_idx) < 2) {
+    warning("Fewer than two local maxima found in the density estimate — ",
+            "distribution may not be bimodal.")
+    return(NA_real_)
+  }
+
+  peaks <- data.frame(x = d$x[peak_idx], y = d$y[peak_idx]) %>%
+    arrange(desc(y))
+  peak1 <- peaks[1, ]
+  candidates <- peaks[abs(peaks$x - peak1$x) >= min_peak_separation, ]
+  if (nrow(candidates) == 0) {
+    warning("No second peak found at least ", min_peak_separation,
+            " log10 units from the tallest peak — distribution may not be cleanly bimodal.")
+    return(NA_real_)
+  }
+  peak2 <- candidates[1, ]
+
+  lo <- min(peak1$x, peak2$x); hi <- max(peak1$x, peak2$x)
+  between <- d$x >= lo & d$x <= hi
+  valley_x <- d$x[between][which.min(d$y[between])]
+  10 ^ valley_x
+}
+
+# ---------------------------------------------------------------------------
+# read_fastp_depth — read all *.json fastp reports in a directory, extract
+# each sample's post-filtering read count (needed as a MaAsLin3 covariate —
+# see config.R's FIXED_EFFECTS comment for why), and resolve each filename to
+# a File_ID using the same extract_sample_id() logic already used for HUMAnN
+# sample columns. fastp JSONs come from the same fastq-derived naming
+# convention (3_remove_host_reads.sh / 1_combine_L001_L002.sh etc.), so the
+# same STRIP_SUFFIX_REGEX / FILE_ID_REGEXES apply without modification.
+#
+# Returns a tibble: File_ID, read_depth.
+#
+# NOTE: fastp's JSON schema stores the post-QC read count at
+# summary$after_filtering$total_reads (R1+R2 combined for paired-end, per
+# fastp's documented schema). Verify this against one of your actual files
+# before trusting it — e.g. str(jsonlite::fromJSON(files[1])$summary) — since
+# schema details can vary slightly by fastp version/invocation flags.
+# ---------------------------------------------------------------------------
+read_fastp_depth <- function(dir) {
+  files <- list.files(dir, pattern = "\\.json$", full.names = TRUE)
+  if (length(files) == 0) {
+    stop("No .json files found in ", dir, " — check FASTP_JSON_DIR in config.R.")
+  }
+  ids <- extract_sample_id(file_path_sans_ext(basename(files)))
+  depths <- vapply(files, function(f) {
+    j <- fromJSON(f)
+    as.numeric(j$summary$after_filtering$total_reads)
+  }, numeric(1), USE.NAMES = FALSE)
+  tibble(File_ID = ids, read_depth = depths)
 }
 
 # ---------------------------------------------------------------------------

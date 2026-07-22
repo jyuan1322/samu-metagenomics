@@ -29,6 +29,15 @@ GENEFAMILIES_FILE  <- file.path(HUMANN_MERGED_DIR, "joined_genefamilies_relab.ts
 METAGENOMICS_OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R_test2"
 METAGENOMICS_META_DF_RDS <- file.path(METAGENOMICS_OUTPUT_DIR, "meta_df.rds")
 
+# Directory of fastp per-sample QC reports (*.json), used to extract read
+# depth as a MaAsLin3 covariate — see FIXED_EFFECTS comment below for why
+# this matters specifically for MaAsLin3 (not needed for the DESeq2 side,
+# which handles library size via its own size factors instead). Sibling of
+# process_fastqs/ in the repo, per the untracked read_count_fastp_jsons/
+# directory seen in `git status` — update this path if that's not where it
+# actually lives for this run.
+FASTP_JSON_DIR <- "/data/local/jy1008/SaMu/scripts/samu-metagenomics/read_count_fastp_jsons"
+
 # ---------------------------------------------------------------------------
 # Paths — outputs
 # ---------------------------------------------------------------------------
@@ -43,6 +52,38 @@ RUN_TAG <- "07162026"
 # untagged — matches how META_DF_RDS is saved untagged in metagenomics_R).
 FILTERED_FEATURES_RDS <- "filtered_features.rds"
 META_ALIGNED_RDS       <- "meta_aligned.rds"
+
+# ---------------------------------------------------------------------------
+# Pathway hierarchy (03_pathway_hierarchy.R)
+# ---------------------------------------------------------------------------
+# Tab-delimited export of the BioCyc SmartTable built manually on biocyc.org
+# (scoped to MetaCyc, not E. coli — see the "orgid" caveat from setup) with
+# chained "Ontology - direct parents of entity" transform columns applied to
+# surviving_pathway_ids.txt. Update this path after each export.
+PATHWAY_ONTOLOGY_EXPORT_TSV <- "/data/local/jy1008/SaMu/metadata/pathway_ontology_export.tsv"
+
+# The domain-meaningful root of MetaCyc's pathway ontology. Ancestor chains
+# are truncated here — everything above this in the export
+# (Generalized-Reactions, FRAMES, THINGS) is generic Pathway-Tools framework
+# scaffolding, not a meaningful pathway category.
+ROOT_CLASS_NAME <- "Pathways"
+
+# ---------------------------------------------------------------------------
+# Redundancy checks (folded into 03_pathway_hierarchy.R)
+# ---------------------------------------------------------------------------
+# Optional: tab-delimited export of a BioCyc SmartTable with a "Sub-Pathways"
+# transform column applied to redundancy_structural_candidates.csv's IDs
+# (pathways flagged as superpathways). If set and the file exists, confirms
+# which surviving pathways are actual sub-pathways of a surviving
+# superpathway. Leave as NA to skip this cross-check and just get the
+# candidate list for manual follow-up.
+SUB_PATHWAYS_EXPORT_TSV <- NA
+
+# Minimum |Spearman correlation| between two pathways' filtered abundance
+# profiles to flag them as statistically redundant. Not a universal
+# standard — check redundancy_cor_histogram.png first to see whether this
+# cuts off a distinct tail for your data before trusting it.
+REDUNDANCY_COR_THRESHOLD <- 0.9
 
 # ---------------------------------------------------------------------------
 # Which table to analyze
@@ -115,10 +156,16 @@ MIN_MEAN_ABUNDANCE <- 1e-5
 # Minimum prevalence: fraction of samples in which the feature is nonzero.
 MIN_PREVALENCE <- 0.10
 
-# Minimum coefficient of variation (sd/mean over nonzero values). Drops
-# pathways/gene families that are abundant in nearly every sample but don't
-# vary between samples — high abundance, low information for an association
-# test. Tune against abundance_vs_cv.png from 01_load_and_filter.R.
+# Coefficient of variation filter, expressed as a percentile ("keep the top
+# P% most variable features") rather than a raw CV value — matches your
+# advisor's prior convention (e.g. "top 50%") and is dataset-relative, unlike
+# a raw CV number tied to this dataset's particular scale/shape. The actual
+# CV cutoff (a raw value) is computed FROM THE DATA in 01_load_and_filter.R —
+# MIN_CV <- quantile(valid_cv, probs = 1 - MIN_CV_PERCENTILE/100) — and reused
+# from there for filter_by_abundance_cv(), the scatter/histogram diagnostic
+# lines, and the elbow-plot comparison (previously a separate constant,
+# ABUND_ELBOW_CV_PERCENTILE — now the same value drives both, since the
+# elbow-plot reference line and the actual filter should always agree).
 MIN_CV_PERCENTILE <- 50
 
 # ---------------------------------------------------------------------------
@@ -146,45 +193,24 @@ ELBOW_CV_PERCENTILES <- seq(1, 100, by = 1)
 ELBOW_PREVALENCE_FRACTIONS <- c(0.05, 0.10, 0.20, 0.50)
 
 # ---------------------------------------------------------------------------
-# Pathway hierarchy (03_pathway_hierarchy.R)
-# ---------------------------------------------------------------------------
-# Tab-delimited export of the BioCyc SmartTable built manually on biocyc.org
-# (scoped to MetaCyc, not E. coli — see the "orgid" caveat from setup) with
-# chained "Ontology - direct parents of entity" transform columns applied to
-# surviving_pathway_ids.txt. Update this path after each export.
-PATHWAY_ONTOLOGY_EXPORT_TSV <- "/data/local/jy1008/SaMu/results/latest/humann_R/pathway_ontology_export.tsv"
- 
-# The domain-meaningful root of MetaCyc's pathway ontology. Ancestor chains
-# are truncated here — everything above this in the export
-# (Generalized-Reactions, FRAMES, THINGS) is generic Pathway-Tools framework
-# scaffolding, not a meaningful pathway category.
-ROOT_CLASS_NAME <- "Pathways"
-
-# ---------------------------------------------------------------------------
-# Redundancy checks (folded into 03_pathway_hierarchy.R)
-# ---------------------------------------------------------------------------
-# Optional: tab-delimited export of a BioCyc SmartTable with a "Sub-Pathways"
-# transform column applied to redundancy_structural_candidates.csv's IDs
-# (pathways flagged as superpathways). If set and the file exists, confirms
-# which surviving pathways are actual sub-pathways of a surviving
-# superpathway. Leave as NA to skip this cross-check and just get the
-# candidate list for manual follow-up.
-SUB_PATHWAYS_EXPORT_TSV <- NA
- 
-# Minimum |Spearman correlation| between two pathways' filtered abundance
-# profiles to flag them as statistically redundant. Not a universal
-# standard — check redundancy_cor_histogram.png first to see whether this
-# cuts off a distinct tail for your data before trusting it.
-REDUNDANCY_COR_THRESHOLD <- 0.9
-
-# ---------------------------------------------------------------------------
 # MaAsLin3 model
 # ---------------------------------------------------------------------------
 # Matches GROUP_VAR in metagenomics_R/config.R; meta_df$sarc_status_bin
 # arrives already recoded and factored (levels NoSarc, Sarc) from
 # METAGENOMICS_META_DF_RDS, so no re-coercion should be necessary — 02_maaslin.R
 # checks this and only coerces as a fallback.
-FIXED_EFFECTS  <- c("sarc_status_bin")
+#
+# "read_depth" is included per MaAsLin3's own tutorial recommendation:
+# because it identifies prevalence (presence/absence) associations, deeper
+# sequencing can spuriously look like a prevalence association with whatever
+# metadata happens to correlate with depth, if depth itself isn't in the
+# model. It's added to meta_aligned automatically in 01_load_and_filter.R
+# (parsed from FASTP_JSON_DIR). Treat it as a technical covariate, not a
+# result — exclude it (or FDR-correct separately) when interpreting
+# significant_results.tsv; don't report a "pathway X associated with
+# read_depth" hit as a finding.
+FIXED_EFFECTS  <- c("sarc_status_bin", "read_depth",
+                    "age_def", "sex", "smke", "alco", "nutr_score", "bmi")
 RANDOM_EFFECTS <- c()   # e.g. c("record_id") if you have repeated measures
 
 # TSS+LOG are MaAsLin3's own recommended/validated defaults. Since the input

@@ -30,7 +30,6 @@ setwd(OUTPUT_DIR)
 meta_df <- readRDS(METAGENOMICS_META_DF_RDS)
 message(sprintf("Loaded meta_df from metagenomics_R: %d subjects", nrow(meta_df)))
 stopifnot("File_ID" %in% names(meta_df))
-stopifnot(all(FIXED_EFFECTS %in% names(meta_df)))
 
 # ---------------------------------------------------------------------------
 # Feature table: load, keep unstratified rows, extract File_ID from sample
@@ -62,6 +61,24 @@ if (length(shared_ids) == 0) {
 mat <- mat[, shared_ids, drop = FALSE]
 meta_aligned <- meta_df[match(shared_ids, meta_df$File_ID), ]
 stopifnot(identical(colnames(mat), meta_aligned$File_ID))
+
+# ---------------------------------------------------------------------------
+# Read depth (MaAsLin3 covariate — see config.R's FIXED_EFFECTS comment for
+# why). Joined onto meta_aligned here so 02_maaslin.R needs no extra wiring:
+# "read_depth" just needs to be listed in FIXED_EFFECTS.
+# ---------------------------------------------------------------------------
+depth_df <- read_fastp_depth(FASTP_JSON_DIR)
+message(sprintf("Parsed read depth from %d fastp JSON file(s)", nrow(depth_df)))
+
+n_missing_depth <- sum(!meta_aligned$File_ID %in% depth_df$File_ID)
+if (n_missing_depth > 0) {
+  message(sprintf(
+    "WARNING: %d sample(s) in meta_aligned have no matching fastp JSON — read_depth will be NA for these (MaAsLin3 will drop them for that term).",
+    n_missing_depth))
+}
+
+meta_aligned$read_depth <- depth_df$read_depth[match(meta_aligned$File_ID, depth_df$File_ID)]
+stopifnot(all(FIXED_EFFECTS %in% names(meta_aligned)))
 
 # ---------------------------------------------------------------------------
 # Feature stats (computed here, ahead of the elbow plots below, since the
@@ -241,7 +258,4 @@ if (nrow(res$mat) == 0) {
 saveRDS(res$mat, FILTERED_FEATURES_RDS)
 saveRDS(meta_aligned, META_ALIGNED_RDS)
 
-writeLines(rownames(res$mat), tag_filename("surviving_pathway_ids_desc.txt"))
-pathway_ids_clean <- trimws(sub(":.*$", "", rownames(res$mat)))
-writeLines(pathway_ids_clean, tag_filename("surviving_pathway_ids_only.txt"))
 message(sprintf("01_load_and_filter.R complete. Output in: %s", OUTPUT_DIR))
