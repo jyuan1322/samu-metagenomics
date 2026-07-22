@@ -128,6 +128,32 @@ def prepare_feature_table(df: pd.DataFrame, metadata: str) -> pd.DataFrame:
 
 
 # -----------------------------------------------------------------------------
+# omit_pathways — drop rows whose feature matches an entry in omit_list.
+# Matches on the pathway ID portion (text before the first ":", e.g.
+# "PWY-101" from "PWY-101: some pathway name") OR the full feature string,
+# so either a bare ID or a full copy-pasted feature name works as an omit
+# entry. Case-sensitive, exact match only (not substring) — avoids
+# accidentally dropping unrelated pathways that happen to share a substring.
+# -----------------------------------------------------------------------------
+def omit_pathways(df: pd.DataFrame, omit_list: list) -> pd.DataFrame:
+    if not omit_list:
+        return df
+    omit_set = set(omit_list)
+    pathway_ids = df["feature"].str.split(":", n=1).str[0].str.strip()
+    keep_mask = ~(df["feature"].isin(omit_set) | pathway_ids.isin(omit_set))
+    n_dropped = (~keep_mask).sum()
+    if n_dropped > 0:
+        dropped = df.loc[~keep_mask, "feature"].tolist()
+        print(f"Omitting {n_dropped} pathway(s) per --omit-pathways/--omit-file: "
+              f"{dropped}")
+    unmatched = omit_set - set(pathway_ids) - set(df["feature"])
+    if unmatched:
+        print(f"WARNING: {len(unmatched)} omit entry(ies) did not match any "
+              f"feature in the input and had no effect: {sorted(unmatched)}")
+    return df[keep_mask].reset_index(drop=True)
+
+
+# -----------------------------------------------------------------------------
 # Cosmetic helpers
 # -----------------------------------------------------------------------------
 def clean_feature_label(feature: str, max_len: int = 45) -> str:
@@ -140,6 +166,18 @@ def clean_feature_label(feature: str, max_len: int = 45) -> str:
     if len(label) > max_len:
         label = label[: max_len - 1] + "\u2026"
     return label
+
+
+def wrap_feature_label(feature: str, width: int = 28) -> str:
+    """Like clean_feature_label, but wraps onto multiple lines (via
+    textwrap.fill) instead of truncating with an ellipsis — for contexts
+    (e.g. the bar chart's y-axis) where the full name is preferred and
+    vertical space for extra lines is available."""
+    if ":" in feature:
+        label = feature.split(":", 1)[1].strip()
+    else:
+        label = feature
+    return textwrap.fill(label, width=width)
 
 
 DRIVER_COLORS = {"abundance": "#2166AC", "prevalence": "#B2182B"}
@@ -237,24 +275,38 @@ def plot_volcano(ax, feat_df: pd.DataFrame, qval_threshold: float, label_top_n: 
 # -----------------------------------------------------------------------------
 # Panel B: top-N features, horizontal bar chart
 # -----------------------------------------------------------------------------
-def plot_top_features(ax, feat_df: pd.DataFrame, top_n: int, qval_threshold: float):
+def plot_top_features(ax, feat_df: pd.DataFrame, top_n: int, qval_threshold: float,
+                      label_wrap_width: int = 28):
     top = feat_df.nsmallest(top_n, "qval_isolated").iloc[::-1]  # smallest q at top of plot
-    labels = [clean_feature_label(f) for f in top["feature"]]
+    labels = [wrap_feature_label(f, width=label_wrap_width) for f in top["feature"]]
     colors = [DRIVER_COLORS[d] for d in top["driver"]]
     values = top["abund_coef"].values
-    ypos = np.arange(len(top))
 
-    ax.barh(ypos, values, color=colors, height=0.65, edgecolor="white", linewidth=0.4)
+    # Wrapped labels can span multiple lines; widen the vertical gap between
+    # rows in proportion to the longest label's line count so adjacent bars'
+    # labels don't visually collide. bar_height stays a fixed fraction of the
+    # (now-widened) row spacing rather than a fixed absolute value.
+    max_lines = max(label.count("\n") + 1 for label in labels)
+    row_spacing = 1.0 + 0.45 * (max_lines - 1)
+    ypos = np.arange(len(top)) * row_spacing
+    bar_height = 0.65 * min(row_spacing, 1.6)  # cap so bars don't get too thick
+
+    ax.barh(ypos, values, color=colors, height=bar_height, edgecolor="white", linewidth=0.4)
     ax.set_yticks(ypos)
     ax.set_yticklabels(labels, fontsize=6.5)
+    ax.set_ylim(-row_spacing * 0.75, ypos[-1] + row_spacing * 0.75)
     ax.axvline(0, color="grey", linewidth=0.6)
 
+    # p/q-value labels always sit in a fixed column to the right of the panel
+    # (axes-fraction x, data-coordinate y) rather than at each bar's tip —
+    # bars can point either direction depending on coefficient sign, and
+    # anchoring to the tip would put labels on inconsistent sides / overlap
+    # the zero line for small-magnitude bars.
     for y, (_, row) in zip(ypos, top.iterrows()):
         sig_marker = "*" if row["qval_isolated"] < qval_threshold else ""
-        x_text = row["abund_coef"] + (0.02 if row["abund_coef"] >= 0 else -0.02)
-        ha = "left" if row["abund_coef"] >= 0 else "right"
-        ax.text(x_text, y, f"q={row['qval_isolated']:.2g}{sig_marker}",
-                va="center", ha=ha, fontsize=6, color="black")
+        ax.text(1.03, y, f"p={row['pval_joint']:.2g}, q={row['qval_isolated']:.2g}{sig_marker}",
+                transform=ax.get_yaxis_transform(),
+                va="center", ha="left", fontsize=6, color="black")
 
     ax.set_xlabel("Abundance-model coefficient (log$_2$ fold change)")
     ax.spines[["top", "right"]].set_visible(False)
@@ -265,13 +317,15 @@ def plot_top_features(ax, feat_df: pd.DataFrame, top_n: int, qval_threshold: flo
 # Main
 # -----------------------------------------------------------------------------
 def make_figure(feat_df: pd.DataFrame, metadata: str, qval_threshold: float,
-                top_n: int, label_top_n: int, output_prefix: str):
+                top_n: int, label_top_n: int, output_prefix: str,
+                label_wrap_width: int = 28):
     set_publication_style()
 
     fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.4), constrained_layout=True)
 
     plot_volcano(axes[0], feat_df, qval_threshold, label_top_n)
-    plot_top_features(axes[1], feat_df, top_n, qval_threshold)
+    plot_top_features(axes[1], feat_df, top_n, qval_threshold,
+                      label_wrap_width=label_wrap_width)
 
     fig.suptitle(f"MaAsLin3 associations with {metadata}", fontsize=9, y=1.06)
 
@@ -294,6 +348,18 @@ def main():
                     help="Number of points labeled directly on the volcano plot (default 8)")
     ap.add_argument("--output", default="maaslin_volcano_top_features",
                     help="Output file prefix (default maaslin_volcano_top_features)")
+    ap.add_argument("--omit-pathways", default="",
+                    help="Comma-separated pathway IDs or full feature names to "
+                         "exclude from the table and figure, e.g. "
+                         "'PWY-101,PWY-6737: starch degradation V'")
+    ap.add_argument("--omit-file", default=None,
+                    help="Path to a text file with one pathway ID or full "
+                         "feature name to omit per line. Combined with "
+                         "--omit-pathways if both are given.")
+    ap.add_argument("--label-wrap-width", type=int, default=28,
+                    help="Character width at which bar-chart pathway labels "
+                         "wrap onto a new line, rather than being truncated "
+                         "(default 28)")
     args = ap.parse_args()
 
     df = pd.read_csv(args.input, sep="\t")
@@ -303,11 +369,18 @@ def main():
     if missing:
         sys.exit(f"Input file is missing expected column(s): {missing}")
 
+    omit_list = [s.strip() for s in args.omit_pathways.split(",") if s.strip()]
+    if args.omit_file:
+        with open(args.omit_file) as f:
+            omit_list += [line.strip() for line in f if line.strip()]
+
     feat_df = prepare_feature_table(df, args.metadata)
+    feat_df = omit_pathways(feat_df, omit_list)
     feat_df.to_csv(f"{args.output}_table.csv", index=False)
 
     make_figure(feat_df, args.metadata, args.qval_threshold,
-               args.top_n, args.label_top_n, args.output)
+               args.top_n, args.label_top_n, args.output,
+               label_wrap_width=args.label_wrap_width)
 
     n_sig = (feat_df["qval_isolated"] < args.qval_threshold).sum()
     print(f"{len(feat_df)} features plotted. "
@@ -318,3 +391,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# e.g. 
+# python plot_maaslin_results.py
+#   --input /data/local/jy1008/SaMu/results/latest/humann_R/maaslin3_pathabundance_07162026/all_results.tsv \
+#   --metadata sarc_status_bin \
+#   --omit-file omit_pathways.txt \
+#   --label-top-n 3 \
+#   --output maaslin_volcano_top_features
