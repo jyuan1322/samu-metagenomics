@@ -49,6 +49,11 @@ recode_samu_covariates <- function(df,
                      ifelse(df$sex == "1", "F", df$sex))
   }
 
+  if ("age_def" %in% names(df)) {
+    message("Converting age_def to numeric; non-numeric values become NA")
+    df$age_def <- suppressWarnings(as.numeric(df$age_def))
+  }
+
   message("Converting sarc_status to numeric; non-numeric values become NA")
   df$sarc_status <- suppressWarnings(as.numeric(df$sarc_status))
 

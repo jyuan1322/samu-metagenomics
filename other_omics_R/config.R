@@ -46,7 +46,8 @@ NMR <- list(
 
   # Assay tables (relative to input_dir).
   nmr_csv    = "metadata/20251027_SaMu_NMR_ureum_creat_v10.csv",
-  quorum_csv = "metadata/20251030_SaMu_QSP_data_v1.csv",
+  quorum_csv = "metadata/20251030_SaMu_QSP_data_v3.csv",
+  quorum_grouping_file = "metadata/QSP_overview_PN1_long.csv",
 
   # NMR metabolite columns start at this 1-based index in nmr_csv.
   nmr_first_col   = 12,
@@ -55,6 +56,7 @@ NMR <- list(
 
   # Value standing in for below-detection-limit in NMR data -> 0.
   nmr_below_detection = "UNK_E_1",
+  quorum_below_detection = "UNK_N",
 
   # Metabolites to drop from the Bray-Curtis ordination (high missingness).
   beta_remove_metabs = c("Glucose", "Galactose"),
