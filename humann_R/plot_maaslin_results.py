@@ -2,15 +2,30 @@
 """
 plot_maaslin_results.py
 
-Two-panel figure summarizing a MaAsLin3 all_results.tsv
-for a single metadata term of interest (e.g. sarc_status_bin):
+Three-panel figure summarizing a MaAsLin3 all_results.tsv for a single
+metadata term of interest (e.g. sarc_status_bin):
 
-  Panel A: volcano plot (abundance-model coefficient vs. -log10(q-value)),
+  Panel A: volcano plot (abundance-model coefficient vs. -log10(p-value)),
            colored by which sub-model (abundance vs. prevalence) drove the
            joint significance for that feature.
   Panel B: horizontal bar chart of the top-N features by q-value, signed by
-           effect direction, colored the same way as Panel A for a
-           consistent visual language across the figure.
+           effect direction, colored the same way as Panel A, with p- and
+           q-values reported to the right of each bar.
+  Panel C (optional): clustered heatmap of per-sample enrichment (row
+           z-scored log-abundance) for the same top-N pathways shown in
+           Panel B. Pathways (rows) are hierarchically clustered; samples
+           (columns) are first split into groups by --group-col (e.g.
+           sarc_status_bin), then hierarchically clustered *within* each
+           group, so the group split is always visually respected and
+           clustering only reorders samples inside a group.
+
+Panel C requires two additional inputs beyond all_results.tsv, since
+per-sample abundance values and group membership aren't present in
+MaAsLin3's own results table: --abundance-table (the filtered feature
+matrix used as MaAsLin3 input) and --sample-metadata (sample -> group
+mapping). See the module-level NOTE below for how to export these from the
+R pipeline. If neither is supplied, the script falls back to the original
+two-panel figure.
 
 Why q-values are recomputed here rather than trusting MaAsLin3's own
 qval_joint column directly: qval_joint is FDR-corrected across every
@@ -21,12 +36,28 @@ that term's pval_joint across features — matching the guidance in
 MaAsLin3's own documentation ("it may be preferable to FDR correct just the
 p-values from the variables of interest").
 
+NOTE — exporting the two Panel C input files from R (e.g. in 03_maaslin.R,
+after feature_mat / meta_aligned are loaded, before running maaslin3):
+
+    write.csv(
+      data.frame(feature = rownames(feature_mat), feature_mat, check.names = FALSE),
+      tag_filename("filtered_features_abundance.csv"), row.names = FALSE
+    )
+    write.csv(
+      meta_aligned[, c("File_ID", "sarc_status_bin")],
+      tag_filename("sample_metadata_for_heatmap.csv"), row.names = FALSE
+    )
+
 Usage:
     python plot_maaslin_results.py \
         --input all_results.tsv \
         --metadata sarc_status_bin \
         --qval-threshold 0.1 \
         --top-n 15 \
+        --abundance-table filtered_features_abundance.csv \
+        --sample-metadata sample_metadata_for_heatmap.csv \
+        --sample-id-col File_ID \
+        --group-col sarc_status_bin \
         --output maaslin_volcano_top_features
 
 Produces <output>.pdf and <output>.png (300 DPI), plus <output>_table.csv
@@ -41,13 +72,14 @@ import textwrap
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
+from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list
+from scipy.spatial.distance import pdist
 
 
 # -----------------------------------------------------------------------------
 # BH (Benjamini-Hochberg) correction, implemented directly rather than via
 # statsmodels/scipy, so this script has no dependency beyond
-# pandas/numpy/matplotlib. Matches R's p.adjust(method = "BH").
+# pandas/numpy/matplotlib/scipy. Matches R's p.adjust(method = "BH").
 # -----------------------------------------------------------------------------
 def bh_qvalues(pvals: np.ndarray) -> np.ndarray:
     pvals = np.asarray(pvals, dtype=float)
@@ -183,6 +215,10 @@ def wrap_feature_label(feature: str, width: int = 28) -> str:
 DRIVER_COLORS = {"abundance": "#2166AC", "prevalence": "#B2182B"}
 DRIVER_LABELS = {"abundance": "Abundance-driven", "prevalence": "Prevalence-driven"}
 
+# Default group color cycle for Panel C's group-annotation strip. Extended
+# as needed if --group-col has more than 4 levels (falls back to a warning).
+GROUP_COLOR_CYCLE = ["#4DAF4A", "#984EA3", "#FF7F00", "#377EB8", "#E41A1C", "#A65628"]
+
 
 def set_publication_style():
     plt.rcParams.update({
@@ -249,11 +285,6 @@ def plot_volcano(ax, feat_df: pd.DataFrame, qval_threshold: float, label_top_n: 
         if is_empirical else
         f"p = {p_threshold:.2g}\n(rank-1 threshold; none passed)"
     )
-    # Anchored in axes-fraction x (via get_yaxis_transform: x in [0,1] relative
-    # to the axes, y in data coordinates) so the label always stays inside the
-    # panel regardless of axis limits, instead of extending past the plot in
-    # data coordinates and forcing constrained_layout to add huge inter-panel
-    # spacing to avoid overlapping panel B.
     ax.text(0.98, sig_line_y, line_label, transform=ax.get_yaxis_transform(),
             va="bottom", ha="right", fontsize=6, color="grey", linespacing=1.3)
 
@@ -275,21 +306,16 @@ def plot_volcano(ax, feat_df: pd.DataFrame, qval_threshold: float, label_top_n: 
 # -----------------------------------------------------------------------------
 # Panel B: top-N features, horizontal bar chart
 # -----------------------------------------------------------------------------
-def plot_top_features(ax, feat_df: pd.DataFrame, top_n: int, qval_threshold: float,
+def plot_top_features(ax, top: pd.DataFrame, top_n: int, qval_threshold: float,
                       label_wrap_width: int = 28):
-    top = feat_df.nsmallest(top_n, "qval_isolated").iloc[::-1]  # smallest q at top of plot
     labels = [wrap_feature_label(f, width=label_wrap_width) for f in top["feature"]]
     colors = [DRIVER_COLORS[d] for d in top["driver"]]
     values = top["abund_coef"].values
 
-    # Wrapped labels can span multiple lines; widen the vertical gap between
-    # rows in proportion to the longest label's line count so adjacent bars'
-    # labels don't visually collide. bar_height stays a fixed fraction of the
-    # (now-widened) row spacing rather than a fixed absolute value.
     max_lines = max(label.count("\n") + 1 for label in labels)
     row_spacing = 1.0 + 0.45 * (max_lines - 1)
     ypos = np.arange(len(top)) * row_spacing
-    bar_height = 0.65 * min(row_spacing, 1.6)  # cap so bars don't get too thick
+    bar_height = 0.65 * min(row_spacing, 1.6)
 
     ax.barh(ypos, values, color=colors, height=bar_height, edgecolor="white", linewidth=0.4)
     ax.set_yticks(ypos)
@@ -297,11 +323,6 @@ def plot_top_features(ax, feat_df: pd.DataFrame, top_n: int, qval_threshold: flo
     ax.set_ylim(-row_spacing * 0.75, ypos[-1] + row_spacing * 0.75)
     ax.axvline(0, color="grey", linewidth=0.6)
 
-    # p/q-value labels always sit in a fixed column to the right of the panel
-    # (axes-fraction x, data-coordinate y) rather than at each bar's tip —
-    # bars can point either direction depending on coefficient sign, and
-    # anchoring to the tip would put labels on inconsistent sides / overlap
-    # the zero line for small-magnitude bars.
     for y, (_, row) in zip(ypos, top.iterrows()):
         sig_marker = "*" if row["qval_isolated"] < qval_threshold else ""
         ax.text(1.03, y, f"p={row['pval_joint']:.2g}, q={row['qval_isolated']:.2g}{sig_marker}",
@@ -314,20 +335,243 @@ def plot_top_features(ax, feat_df: pd.DataFrame, top_n: int, qval_threshold: flo
 
 
 # -----------------------------------------------------------------------------
-# Main
+# Panel C: clustered heatmap of per-sample enrichment for the top pathways
+# -----------------------------------------------------------------------------
+def load_abundance_table(path: str) -> pd.DataFrame:
+    """Feature x sample table: first column 'feature' (or unnamed -> treated
+    as the index), remaining columns are samples. Handles CSV or TSV by
+    extension."""
+    sep = "\t" if path.lower().endswith((".tsv", ".txt")) else ","
+    df = pd.read_csv(path, sep=sep)
+    id_col = "feature" if "feature" in df.columns else df.columns[0]
+    df = df.set_index(id_col)
+    df.index.name = "feature"
+    return df
+
+
+def load_sample_metadata(path: str, sample_id_col: str, group_col: str) -> pd.DataFrame:
+    sep = "\t" if path.lower().endswith((".tsv", ".txt")) else ","
+    df = pd.read_csv(path, sep=sep)
+    missing = {sample_id_col, group_col} - set(df.columns)
+    if missing:
+        sys.exit(f"--sample-metadata is missing expected column(s): {missing}. "
+                 f"Found columns: {list(df.columns)}")
+    df = df.set_index(sample_id_col)
+    df.index = df.index.astype(str)
+    return df[[group_col]]
+
+
+def build_enrichment_matrix(abundance_df: pd.DataFrame, meta_df: pd.DataFrame,
+                            top_features: list, group_col: str):
+    """Restrict to the top pathways x samples with known group membership,
+    then row-z-score log10(abundance + pseudocount) — each pathway's values
+    are expressed relative to its own mean/sd across samples ("enrichment"),
+    which is what makes a cross-pathway heatmap color scale meaningful (raw
+    relative abundances span many orders of magnitude across pathways and
+    would otherwise all look like a single hot/cold row)."""
+    abundance_df = abundance_df.copy()
+    abundance_df.columns = abundance_df.columns.astype(str)
+
+    missing_features = [f for f in top_features if f not in abundance_df.index]
+    if missing_features:
+        sys.exit(
+            "The following top-panel-B feature(s) were not found in "
+            "--abundance-table (row identifiers must match all_results.tsv's "
+            f"'feature' column exactly): {missing_features}"
+        )
+
+    shared_samples = [s for s in abundance_df.columns if s in meta_df.index]
+    n_dropped_abund = abundance_df.shape[1] - len(shared_samples)
+    n_dropped_meta = meta_df.shape[0] - len(shared_samples)
+    if n_dropped_abund > 0:
+        print(f"NOTE: {n_dropped_abund} sample(s) in --abundance-table have no "
+              f"matching row in --sample-metadata and are excluded from Panel C.")
+    if n_dropped_meta > 0:
+        print(f"NOTE: {n_dropped_meta} sample(s) in --sample-metadata have no "
+              f"matching column in --abundance-table and are excluded from Panel C.")
+    if len(shared_samples) < 2:
+        sys.exit("Fewer than 2 samples matched between --abundance-table and "
+                 "--sample-metadata — cannot build Panel C.")
+
+    mat = abundance_df.loc[top_features, shared_samples].astype(float)
+    groups = meta_df.loc[shared_samples, group_col]
+
+    pseudocount = mat[mat > 0].min().min()
+    if pd.isna(pseudocount) or pseudocount <= 0:
+        pseudocount = 1e-6
+    log_mat = np.log10(mat + pseudocount)
+
+    row_mean = log_mat.mean(axis=1)
+    row_std = log_mat.std(axis=1, ddof=0)
+    # Guard against a (rare, post-filtering) zero-variance row: z-score would
+    # be 0/0. Leave it as a flat 0 (no enrichment signal) rather than NaN,
+    # so it doesn't break clustering distances.
+    row_std_safe = row_std.replace(0, np.nan)
+    z_mat = log_mat.sub(row_mean, axis=0).div(row_std_safe, axis=0).fillna(0.0)
+
+    return z_mat, groups
+
+
+def cluster_order(mat: pd.DataFrame, axis: str, metric: str = "euclidean",
+                  method: str = "average"):
+    """Hierarchical-cluster leaf order for rows (axis='rows') or columns
+    (axis='cols') of mat. Falls back to the original order (no reordering,
+    no linkage) if fewer than 3 items are present, since a dendrogram over
+    1-2 items is degenerate/uninformative and pdist can error on n<2."""
+    data = mat.values if axis == "rows" else mat.values.T
+    labels = list(mat.index) if axis == "rows" else list(mat.columns)
+    if len(labels) < 3:
+        return labels, None
+    dist = pdist(data, metric=metric)
+    if not np.all(np.isfinite(dist)):
+        # e.g. correlation distance undefined for a constant row/column pair
+        # — fall back to euclidean, which is always finite for finite input.
+        dist = pdist(data, metric="euclidean")
+    Z = linkage(dist, method=method)
+    order = leaves_list(Z)
+    return [labels[i] for i in order], Z
+
+
+def cluster_columns_within_groups(z_mat: pd.DataFrame, groups: pd.Series, group_order: list):
+    """Cluster samples separately within each group level (so the group
+    split is always respected), then concatenate. Returns the full ordered
+    sample list and the group-boundary indices (for divider lines)."""
+    ordered_samples = []
+    boundaries = []
+    for g in group_order:
+        members = groups[groups == g].index.tolist()
+        sub = z_mat[members]
+        order, _ = cluster_order(sub, axis="cols")
+        ordered_samples.extend(order)
+        boundaries.append(len(ordered_samples))
+    return ordered_samples, boundaries[:-1]  # drop final boundary (end of matrix)
+
+
+def plot_heatmap(fig, gs_cell, z_mat: pd.DataFrame, groups: pd.Series,
+                 group_order: list, label_wrap_width: int = 28):
+    row_order, row_linkage_Z = cluster_order(z_mat, axis="rows")
+    col_order, col_boundaries = cluster_columns_within_groups(z_mat, groups, group_order)
+    ordered = z_mat.loc[row_order, col_order]
+
+    group_colors = {g: GROUP_COLOR_CYCLE[i % len(GROUP_COLOR_CYCLE)]
+                    for i, g in enumerate(group_order)}
+    if len(group_order) > len(GROUP_COLOR_CYCLE):
+        print(f"WARNING: {len(group_order)} group levels but only "
+              f"{len(GROUP_COLOR_CYCLE)} default colors defined — colors will repeat.")
+
+    # Layout: [row dendrogram | heatmap+strip | colorbar], with the middle
+    # column split into a thin group-annotation strip above the heatmap
+    # proper. The dendrogram column gets a matching blank top row so its
+    # dendrogram aligns vertically with the heatmap (not the strip).
+    outer = gs_cell.subgridspec(1, 3, width_ratios=[0.14, 1.0, 0.035], wspace=0.03)
+    dend_outer = outer[0].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
+    heat_outer = outer[1].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
+
+    ax_dend = fig.add_subplot(dend_outer[1])
+    ax_strip = fig.add_subplot(heat_outer[0])
+    ax_heat = fig.add_subplot(heat_outer[1])
+    ax_cbar = fig.add_subplot(outer[2])
+
+    # --- row dendrogram (left) ---
+    if row_linkage_Z is not None:
+        dendrogram(row_linkage_Z, orientation="left", ax=ax_dend, no_labels=True,
+                  color_threshold=0, above_threshold_color="#555555",
+                  link_color_func=lambda k: "#555555")
+    ax_dend.set_ylim(ax_dend.get_ylim())  # lock before hiding ticks
+    ax_dend.axis("off")
+
+    # --- group annotation strip (top) ---
+    # Drawn as individual axvspan rectangles (vector, one patch per group
+    # block) rather than imshow — simpler than pcolormesh here since there
+    # are only len(group_order) blocks, not one cell per sample.
+    ax_strip.set_xlim(0, len(col_order))
+    ax_strip.set_ylim(0, 1)
+    ax_strip.set_xticks([]); ax_strip.set_yticks([])
+    for spine in ax_strip.spines.values():
+        spine.set_visible(False)
+    start = 0
+    for g in group_order:
+        n = int((groups.loc[col_order] == g).sum())
+        ax_strip.axvspan(start, start + n, color=group_colors[g])
+        ax_strip.text(start + n / 2, 0.5, f"{g} (n={n})", ha="center", va="center",
+                      fontsize=6, fontweight="bold", color="white")
+        start += n
+
+    # --- heatmap ---
+    # pcolormesh (not imshow) so every sample x pathway cell is drawn as an
+    # individual vector polygon rather than a rasterized bitmap — stays crisp
+    # at any zoom level in the saved PDF, and each cell is a distinct,
+    # selectable object (e.g. editable in Illustrator). Thin white
+    # edgecolors give each cell a visible border ("show each individual box
+    # for each sample"). pcolormesh places row 0 at the BOTTOM by default
+    # (opposite of imshow's default top-to-bottom convention) — invert_yaxis()
+    # restores the same visual order as before (row_order top-to-bottom,
+    # matching the y-tick labels).
+    vlim = min(3.0, np.nanmax(np.abs(ordered.values))) if ordered.size else 1.0
+    im = ax_heat.pcolormesh(ordered.values, cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+                            edgecolors="white", linewidth=0.4)
+    ax_heat.invert_yaxis()
+    # Cell (row i, col j) spans x in [j, j+1] under pcolormesh's default grid,
+    # so a boundary BETWEEN column b-1 and column b sits at x=b exactly (no
+    # -0.5 offset needed here, unlike imshow's pixel-center convention).
+    for b in col_boundaries:
+        ax_heat.axvline(b, color="black", linewidth=2.2)
+    ax_heat.set_xticks([])
+    ax_heat.set_yticks(np.arange(len(row_order)) + 0.5)
+    ax_heat.set_yticklabels(
+        [wrap_feature_label(f, width=label_wrap_width) for f in row_order], fontsize=6)
+    ax_heat.set_xlabel(f"Samples (n={len(col_order)}, clustered within group)", fontsize=7)
+
+    # --- colorbar (own gridspec cell — avoids manual cbar_pos overlap issues) ---
+    cbar = fig.colorbar(im, cax=ax_cbar)
+    cbar.set_label("Row z-score\n(log$_{10}$ relative abundance)", fontsize=6)
+    cbar.ax.tick_params(labelsize=6)
+
+    ax_heat.set_title("Pathway enrichment across samples\n"
+                      "(rows clustered; columns split by group, clustered within group)",
+                      loc="left", fontweight="bold", fontsize=8)
+
+
+# -----------------------------------------------------------------------------
+# Main figure assembly
 # -----------------------------------------------------------------------------
 def make_figure(feat_df: pd.DataFrame, metadata: str, qval_threshold: float,
                 top_n: int, label_top_n: int, output_prefix: str,
-                label_wrap_width: int = 28):
+                label_wrap_width: int = 28,
+                z_mat: pd.DataFrame = None, groups: pd.Series = None,
+                group_order: list = None):
     set_publication_style()
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.4), constrained_layout=True)
+    top = feat_df.nsmallest(top_n, "qval_isolated").iloc[::-1]  # smallest q at top of plot
 
-    plot_volcano(axes[0], feat_df, qval_threshold, label_top_n)
-    plot_top_features(axes[1], feat_df, top_n, qval_threshold,
-                      label_wrap_width=label_wrap_width)
+    include_heatmap = z_mat is not None and groups is not None
+    if include_heatmap:
+        fig = plt.figure(figsize=(7.6, 9.0), constrained_layout=True)
+        gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.5])
+        top_row = gs[0].subgridspec(1, 2, wspace=0.35)
+        ax_volcano = fig.add_subplot(top_row[0])
+        ax_bar = fig.add_subplot(top_row[1])
+    else:
+        fig = plt.figure(figsize=(7.2, 3.4), constrained_layout=True)
+        gs = fig.add_gridspec(1, 2)
+        ax_volcano = fig.add_subplot(gs[0])
+        ax_bar = fig.add_subplot(gs[1])
 
-    fig.suptitle(f"MaAsLin3 associations with {metadata}", fontsize=9, y=1.06)
+    plot_volcano(ax_volcano, feat_df, qval_threshold, label_top_n)
+    plot_top_features(ax_bar, top, top_n, qval_threshold, label_wrap_width=label_wrap_width)
+
+    if include_heatmap:
+        # Panel C uses the SAME top pathways as Panel B, for direct
+        # cross-reference between the bar chart and the heatmap rows.
+        top_features_for_heatmap = [f for f in top["feature"] if f in z_mat.index]
+        missing = set(top["feature"]) - set(top_features_for_heatmap)
+        if missing:
+            print(f"WARNING: {len(missing)} top-panel-B feature(s) not present in "
+                 f"the abundance table and omitted from Panel C: {sorted(missing)}")
+        plot_heatmap(fig, gs[1], z_mat.loc[top_features_for_heatmap], groups,
+                    group_order, label_wrap_width=label_wrap_width)
+
+    fig.suptitle(f"MaAsLin3 associations with {metadata}", fontsize=9, y=1.01)
 
     fig.savefig(f"{output_prefix}.pdf", bbox_inches="tight")
     fig.savefig(f"{output_prefix}.png", dpi=300, bbox_inches="tight")
@@ -343,7 +587,7 @@ def main():
     ap.add_argument("--qval-threshold", type=float, default=0.1,
                     help="Significance line drawn on the volcano plot (default 0.1, matching MAASLIN_MAX_SIGNIFICANCE)")
     ap.add_argument("--top-n", type=int, default=15,
-                    help="Number of features shown in the bar panel (default 15)")
+                    help="Number of features shown in the bar panel and heatmap (default 15)")
     ap.add_argument("--label-top-n", type=int, default=8,
                     help="Number of points labeled directly on the volcano plot (default 8)")
     ap.add_argument("--output", default="maaslin_volcano_top_features",
@@ -357,9 +601,23 @@ def main():
                          "feature name to omit per line. Combined with "
                          "--omit-pathways if both are given.")
     ap.add_argument("--label-wrap-width", type=int, default=28,
-                    help="Character width at which bar-chart pathway labels "
-                         "wrap onto a new line, rather than being truncated "
-                         "(default 28)")
+                    help="Character width at which pathway labels wrap onto "
+                         "a new line, rather than being truncated (default 28)")
+    ap.add_argument("--abundance-table", default=None,
+                    help="Filtered feature abundance table (feature x sample; "
+                         "see module docstring for the R export snippet). "
+                         "Required, along with --sample-metadata, to draw Panel C.")
+    ap.add_argument("--sample-metadata", default=None,
+                    help="Sample -> group metadata table. Required, along with "
+                         "--abundance-table, to draw Panel C.")
+    ap.add_argument("--sample-id-col", default="File_ID",
+                    help="Sample identifier column name in --sample-metadata (default File_ID)")
+    ap.add_argument("--group-col", default=None,
+                    help="Group column name in --sample-metadata used to split/color "
+                         "heatmap columns (default: same as --metadata)")
+    ap.add_argument("--group-order", default=None,
+                    help="Comma-separated group level order for the heatmap columns "
+                         "(default: sorted unique values observed)")
     args = ap.parse_args()
 
     df = pd.read_csv(args.input, sep="\t")
@@ -378,24 +636,38 @@ def main():
     feat_df = omit_pathways(feat_df, omit_list)
     feat_df.to_csv(f"{args.output}_table.csv", index=False)
 
+    z_mat = groups = group_order = None
+    if args.abundance_table or args.sample_metadata:
+        if not (args.abundance_table and args.sample_metadata):
+            sys.exit("--abundance-table and --sample-metadata must both be given "
+                     "to draw Panel C (or neither, to skip it).")
+        group_col = args.group_col or args.metadata
+        abundance_df = load_abundance_table(args.abundance_table)
+        meta_df = load_sample_metadata(args.sample_metadata, args.sample_id_col, group_col)
+
+        top_for_heatmap = feat_df.nsmallest(args.top_n, "qval_isolated")["feature"].tolist()
+        z_mat, groups = build_enrichment_matrix(abundance_df, meta_df, top_for_heatmap, group_col)
+
+        if args.group_order:
+            group_order = [s.strip() for s in args.group_order.split(",")]
+            unknown = set(group_order) - set(groups.unique())
+            if unknown:
+                sys.exit(f"--group-order contains level(s) not present in the data: {unknown}")
+        else:
+            group_order = sorted(groups.unique().tolist())
+
     make_figure(feat_df, args.metadata, args.qval_threshold,
                args.top_n, args.label_top_n, args.output,
-               label_wrap_width=args.label_wrap_width)
+               label_wrap_width=args.label_wrap_width,
+               z_mat=z_mat, groups=groups, group_order=group_order)
 
     n_sig = (feat_df["qval_isolated"] < args.qval_threshold).sum()
     print(f"{len(feat_df)} features plotted. "
          f"{n_sig} significant at q < {args.qval_threshold} "
          f"(isolated to '{args.metadata}' only, not the full multi-covariate correction).")
-    print(f"Wrote {args.output}.pdf, {args.output}.png, {args.output}_table.csv")
+    panel_c_note = " + heatmap (Panel C)" if z_mat is not None else " (Panel C skipped — no --abundance-table/--sample-metadata given)"
+    print(f"Wrote {args.output}.pdf, {args.output}.png, {args.output}_table.csv{panel_c_note}")
 
 
 if __name__ == "__main__":
     main()
-
-# e.g. 
-# python plot_maaslin_results.py
-#   --input /data/local/jy1008/SaMu/results/latest/humann_R/maaslin3_pathabundance_07162026/all_results.tsv \
-#   --metadata sarc_status_bin \
-#   --omit-file omit_pathways.txt \
-#   --label-top-n 3 \
-#   --output maaslin_volcano_top_features

@@ -23,6 +23,15 @@ meta_aligned <- readRDS(META_ALIGNED_RDS)
 message(sprintf("Loaded filtered feature table: %d features x %d samples",
                 nrow(feature_mat), ncol(feature_mat)))
 
+write.csv(
+  data.frame(feature = rownames(feature_mat), feature_mat, check.names = FALSE),
+  tag_filename("filtered_features_abundance.csv"), row.names = FALSE
+)
+write.csv(
+  meta_aligned[, c("File_ID", "sarc_status_bin")],
+  tag_filename("sample_metadata_for_heatmap.csv"), row.names = FALSE
+)
+
 # read depth is added in 01_load_and_filter.R as a column in meta_aligned
 # read_depth <- read_depth_df$read_depth[match(meta_aligned$File_ID, read_depth_df$File_ID)]
 # meta_aligned$read_depth <- read_depth
