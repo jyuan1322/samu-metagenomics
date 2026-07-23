@@ -29,18 +29,20 @@ X_clr, y, groups_clr, binary_cols = load_metagenomics(
 X_log, _, groups_log, _ = load_metagenomics(
     meta_filtered, meta_df, clr_transform=False)
 
-print("label counts:")
-print(y.value_counts().sort_index())
-sys.exit(0)
-
+run_model_set(X_clr, y, groups_clr, binary_cols, out,
+            models=("lasso_logreg",), feature_group_name="clr_taxa",
+            outer_seed=config.OUTER_SEED, inner_seed=config.INNER_SEED,
+            scoring_metric=config.SCORING_METRIC)
+"""
 run_model_set(X_clr, y, groups_clr, binary_cols, out,
               models=("lasso_logreg", "fcnn"), feature_group_name="clr_taxa",
               outer_seed=config.OUTER_SEED, inner_seed=config.INNER_SEED,
               scoring_metric=config.SCORING_METRIC)
+"""
 run_model_set(X_log, y, groups_log, binary_cols, out,
-              models=("random_forest",), feature_group_name="clr_taxa",
-              outer_seed=config.OUTER_SEED, inner_seed=config.INNER_SEED,
-              scoring_metric=config.SCORING_METRIC)
+            models=("random_forest",), feature_group_name="clr_taxa",
+            outer_seed=config.OUTER_SEED, inner_seed=config.INNER_SEED,
+            scoring_metric=config.SCORING_METRIC)
 
 # --- Feature importance from the saved CV results (full models) ---
 linreg_res = lasso_coef_summary(

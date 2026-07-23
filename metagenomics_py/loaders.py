@@ -84,11 +84,25 @@ def load_metagenomics(meta_filtered, meta_df, clr_transform=True,
     which is the form used for the tree-based models in the original script.
     """
     cov = _clinical_covariates(meta_df, index_col="File_ID")
+    print("cov:", cov.shape, cov.index[:5].tolist(), cov.index.dtype)
+
+    wide = meta_filtered.pivot_table(
+        index="Sample", columns="Species", values="relative_abundance", fill_value=0)
+    wide.index = wide.index.str.replace("_profile", "", regex=False)  # ADDED
+    print("wide:", wide.shape, wide.index[:5].tolist(), wide.index.dtype)
+
+    print("overlap:", len(set(wide.index) & set(cov.index)))
+
+
+
+
+    cov = _clinical_covariates(meta_df, index_col="File_ID")
 
     wide = meta_filtered.pivot_table(
         index="Sample", columns="Species",
         values="relative_abundance", fill_value=0,
     )
+    wide.index = wide.index.str.replace("_profile", "", regex=False)  # ADDED
     if clr_transform:
         feats = _clr_transform(wide, pseudo_count)
     else:

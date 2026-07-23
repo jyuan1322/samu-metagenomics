@@ -78,7 +78,7 @@ def build_model(model_type, fcnn_input_dim=None):
     model_dict = {
         "lasso_logreg": (
             LogisticRegression(penalty="l1", solver="saga",
-                               max_iter=5000, random_state=42),
+                               max_iter=20000, random_state=42),
             {"classifier__C": _lasso_C_path()},
         ),
         "mlp": (
@@ -176,6 +176,7 @@ def run_nested_cv(
     cv_results = cross_validate(
         inner_grid_search, X=X, y=y, cv=outer_cv,
         return_estimator=True, return_indices=True, n_jobs=-1,
+        scoring=scoring_metric,
     )
     with open(outfile_cv, "wb") as f:
         pickle.dump(cv_results, f)
