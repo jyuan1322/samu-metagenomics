@@ -276,13 +276,31 @@ plot_missval(se_filt); dev.off()
 se_imp <- DEP2::impute(se_norm, fun = cfg$impute_fun)
 
 # Save imputed matrix (samples x features) and metadata.
+# NOTE: assay(se_imp)'s own column names are NOT the original sample labels
+# — DEP2 renames them internally to "condition_replicate" (e.g. "Sarc_243")
+# for its own design-matrix purposes. colData(se_imp)$label still holds the
+# original label (e.g. "SaMu243"), which is also what gets written to the
+# metadata CSV below — so the Sample column here must come from
+# colData(se_imp)$label, not from rownames()/colnames(assay()), or the two
+# CSVs end up using two different, non-overlapping ID schemes for the same
+# samples. colData rows are guaranteed to align 1:1 (same order) with
+# assay's columns, so this positional assignment is safe.
 proteomics_df <- as.data.frame(t(assay(se_imp)))
-proteomics_df$Sample <- rownames(proteomics_df)
+proteomics_df$Sample <- colData(se_imp)$label
 proteomics_df <- proteomics_df[, c("Sample", setdiff(colnames(proteomics_df), "Sample"))]
 write.csv(proteomics_df,
           file.path(res_dir, paste0(cfg$experiment_name, "_dep2_vsn_imputed_matrix.csv")),
           row.names = FALSE)
-write.csv(as.data.frame(colData(se_imp)),
+
+# Write the full covariate metadata (sarc_status_bin, age_def, sex, bmi,
+# etc.) matched to se_imp's sample order — not just colData(se_imp), which
+# only carries DEP2's own internal columns (label, condition, replicate,
+# ID). condition is a DEP2-internal recode of sarc_status_bin (renamed to
+# satisfy DEP2's expected coldata schema); the original named covariate
+# columns only live in meta_df.
+sample_labels <- colData(se_imp)$label
+metadata_df <- meta_df[match(sample_labels, meta_df$label), ]
+write.csv(metadata_df,
           file.path(res_dir, paste0(cfg$experiment_name, "_dep2_vsn_imputed_metadata.csv")),
           row.names = FALSE)
 
