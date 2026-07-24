@@ -41,14 +41,19 @@ load_massspec <- function() {
 
   combined_df <- map_dfr(files, function(file) {
     df <- read_csv(file, col_types = cols(.default = "c"), quote = "\"") %>%
-      select(-starts_with("..."))
+      dplyr::select(-starts_with("..."))
     raw_col  <- grep("^[0-9]+_.*$|^Sample", colnames(df), value = TRUE)
     iBAQ_col <- grep("^iBAQ", colnames(df), value = TRUE)
-    df <- df %>% rename(RawCount = all_of(raw_col),
+    df <- df %>% dplyr::rename(RawCount = all_of(raw_col),
                         iBAQ_NormCount = all_of(iBAQ_col))
+    # NOTE: must be namespaced — DEP2 loads S4Vectors, which defines its own
+    # rename() generic (for DataFrame/GRanges objects, with a different
+    # argument convention than dplyr's) that masks dplyr::rename() once DEP2
+    # is attached. Same class of bug as the reduce()/purrr::reduce() fix
+    # elsewhere in this script.
     sample_name <- basename(file)
     for (s in cfg$sample_name_strip) sample_name <- gsub(s, "", sample_name, fixed = TRUE)
-    df %>% mutate(SampleID = sample_name)
+    df %>% dplyr::mutate(SampleID = sample_name)
   })
 
   num_cols <- c("Global.Q.Value", "RawCount", "peptideCountsUnique",
@@ -60,14 +65,14 @@ load_massspec <- function() {
   # --- QC: contaminant + Q-value bin barplot, then filter ---
   bins <- c(seq(0, 0.01, by = 0.001), Inf)
   qc <- combined_df %>%
-    mutate(Category = ifelse(contaminant, "Contaminant", "Protein"),
+    dplyr::mutate(Category = ifelse(contaminant, "Contaminant", "Protein"),
            Qbin = ifelse(Category == "Protein",
                          as.character(cut(Global.Q.Value, breaks = bins,
                                           include.lowest = TRUE,
                                           labels = c(paste0(seq(0, 0.009, by = 0.001), "-",
                                                             seq(0.001, 0.01, by = 0.001)), ">0.01"))),
                          "Contaminant")) %>%
-    count(Qbin)
+    dplyr::count(Qbin)
   p <- ggplot(qc, aes(Qbin, n, fill = Qbin)) +
     geom_col(show.legend = FALSE) +
     labs(x = "Category / Q-value bin", y = "Number of rows",
@@ -77,10 +82,10 @@ load_massspec <- function() {
   ggsave(file.path(res_dir, "proteomics_qvalue_bins.pdf"), p, width = 8, height = 6)
 
   clean_df <- combined_df %>%
-    filter(!contaminant, Global.Q.Value < cfg$qvalue_cutoff)
+    dplyr::filter(!contaminant, Global.Q.Value < cfg$qvalue_cutoff)
 
   wide <- clean_df %>%
-    select(Protein.Group, Gene.names, SampleID, RawCount) %>%
+    dplyr::select(Protein.Group, Gene.names, SampleID, RawCount) %>%
     pivot_wider(names_from = SampleID, values_from = RawCount) %>%
     dplyr::rename(ID = Protein.Group, name = Gene.names)
   wide$ID <- paste(wide$ID, wide$name, sep = ";")
@@ -242,9 +247,9 @@ se <- se[, colData(se)$condition != "Unknown"]
 sweep_grid <- expand.grid(fraction = cfg$filter_sweep_fractions,
                           thr = cfg$filter_sweep_thresholds)
 sweep_res <- sweep_grid %>%
-  rowwise() %>%
-  mutate(n_rows = nrow(filter_se(se, thr = thr, fraction = fraction))) %>%
-  ungroup()
+  dplyr::rowwise() %>%
+  dplyr::mutate(n_rows = nrow(filter_se(se, thr = thr, fraction = fraction))) %>%
+  dplyr::ungroup()
 p <- ggplot(sweep_res, aes(fraction, n_rows, color = factor(thr))) +
   geom_line(size = 1) +
   labs(x = "missing fraction threshold (valid fraction required)",
@@ -336,7 +341,7 @@ scaled_mat <- t(scale(t(log_mat)))
 
 pcol <- paste0(cfg$de_test, "_p.val")
 top_feats <- rowData(results) %>% as.data.frame() %>%
-  arrange(.data[[pcol]]) %>% slice_head(n = cfg$heatmap_top_n) %>% pull(ID)
+  dplyr::arrange(.data[[pcol]]) %>% dplyr::slice_head(n = cfg$heatmap_top_n) %>% dplyr::pull(ID)
 scaled_top <- scaled_mat[top_feats, ]
 
 sample_anno <- data.frame(SarcStatus = colData(se_imp)$condition)
