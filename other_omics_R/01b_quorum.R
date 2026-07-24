@@ -18,7 +18,7 @@ suppressPackageStartupMessages({
   library(pheatmap); library(tibble)
 })
 
-cfg <- NMR
+cfg <- QUORUM
 dir.create(cfg$output_dir, recursive = TRUE, showWarnings = FALSE)
 setwd(cfg$output_dir)
 
@@ -137,6 +137,25 @@ for (level_slug in names(grouping_levels)) {
   level_mat <- level_mat[rowSums(level_mat) > 0, , drop = FALSE]  # a sample
   # can end up all-zero at this level even if not at QSP level, e.g. if its
   # only signal was on QSPs excluded from this grouping.
+
+  # ---------------------------------------------------------------------
+  # Export raw (pre-log, pre-scale) per-level values — record_id + group +
+  # one column per feature at this level — same shape as samu_nmr_FullSaMu.csv
+  # so plot_nmr_results.py can be reused unmodified across all three levels
+  # (QSP-level columns already matched samu_quorum_FullSaMu.csv, but Species/
+  # Microbial_target are aggregated sums that otherwise exist nowhere on
+  # disk outside this loop).
+  # ---------------------------------------------------------------------
+  raw_export <- as.data.frame(level_mat) %>%
+    rownames_to_column("record_id") %>%
+    mutate(record_id = as.character(record_id)) %>%
+    left_join(merged_df %>%
+                mutate(record_id = as.character(record_id)) %>%
+                select(record_id, all_of(GROUP_VAR)),
+              by = "record_id") %>%
+    relocate(all_of(GROUP_VAR), .after = record_id)
+  write.csv(raw_export, paste0("samu_quorum_raw_", level_slug, ".csv"),
+            row.names = FALSE, quote = TRUE)
 
   # NOTE: quorum values (quant*prob, summed within a group where applicable)
   # are log-transformed directly, the same way NMR concentrations are —
