@@ -17,7 +17,7 @@ INPUT_DIR <- "/data/local/jy1008/SaMu/metaphlan_out_02102026/all_merged_fastqs"
 
 # Output / working directory. All results (CSVs, plots, .rds) are written here.
 # OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R_extreme_cases"
-OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R_test2"
+OUTPUT_DIR <- "/data/local/jy1008/SaMu/results/latest/metagenomics_R"
 
 # Sample metadata CSV.
 METADATA_CSV <- "/data/local/jy1008/SaMu/metadata/SaMu_sarcopeniestatus_majorcovariates_v13_16012026.csv"
