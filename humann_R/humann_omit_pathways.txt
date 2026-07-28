@@ -1,0 +1,3 @@
+# omit_pathways.txt — one per line, either bare ID or full feature string
+PWY-5690: TCA cycle II (plants and fungi)
+PWY-6595: superpathway of guanosine nucleotides degradation (plants)

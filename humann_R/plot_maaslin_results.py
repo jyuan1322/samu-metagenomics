@@ -221,6 +221,19 @@ GROUP_COLOR_CYCLE = ["#4DAF4A", "#984EA3", "#FF7F00", "#377EB8", "#E41A1C", "#A6
 
 
 def set_publication_style():
+    # Prefer real Arial if it happens to be installed; otherwise fall back to
+    # Liberation Sans, which is metrically identical to Arial (same glyph
+    # widths, so nothing reflows) and is reliably present on Linux systems —
+    # this avoids matplotlib and, later, Inkscape/Illustrator each silently
+    # substituting a *different* fallback font when Arial itself is missing.
+    import matplotlib.font_manager as fm
+    installed = {f.name for f in fm.fontManager.ttflist}
+    preferred_order = ["Arial", "Liberation Sans", "DejaVu Sans"]
+    chosen = next((f for f in preferred_order if f in installed), "DejaVu Sans")
+    if chosen != "Arial":
+        print(f"NOTE: Arial not found on this system — using '{chosen}' instead "
+              f"(font.sans-serif fallback order: {preferred_order}).")
+
     plt.rcParams.update({
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
@@ -548,7 +561,7 @@ def make_figure(feat_df: pd.DataFrame, metadata: str, qval_threshold: float,
     if include_heatmap:
         fig = plt.figure(figsize=(7.6, 9.0), constrained_layout=True)
         gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.5])
-        top_row = gs[0].subgridspec(1, 2, wspace=0.35)
+        top_row = gs[0].subgridspec(1, 2, wspace=0.15)
         ax_volcano = fig.add_subplot(top_row[0])
         ax_bar = fig.add_subplot(top_row[1])
     else:
