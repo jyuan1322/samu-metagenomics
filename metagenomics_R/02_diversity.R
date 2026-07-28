@@ -189,6 +189,28 @@ write.csv(alpha_wilcox,
 bray_dist <- phyloseq::distance(ps, method = "bray")
 ord <- ordinate(ps, method = "PCoA", distance = bray_dist)
 
+# Export the exact PCoA coordinates + % variance explained that the plot
+# below is drawn from, so a downstream Python script can plot these SAME
+# numbers directly rather than re-deriving them from a second, independent
+# PCoA implementation (which risks a different eigen-decomposition
+# convention -- e.g. how negative eigenvalues from this non-Euclidean
+# Bray-Curtis distance get handled in the % variance explained).
+pcoa_coords <- as.data.frame(ord$vectors[, 1:2])
+colnames(pcoa_coords) <- c("PC1", "PC2")
+pcoa_coords$File_ID <- rownames(pcoa_coords)
+pcoa_coords[[GROUP_VAR]] <- sample_data(ps)[[GROUP_VAR]][
+  match(pcoa_coords$File_ID, sample_names(ps))]
+write.csv(pcoa_coords, tag_filename("beta_diversity_pcoa_coords.csv"),
+          row.names = FALSE)
+
+pcoa_var_explained <- data.frame(
+  axis = c("PC1", "PC2"),
+  var_explained = ord$values$Relative_eig[1:2]
+)
+write.csv(pcoa_var_explained,
+          tag_filename("beta_diversity_pcoa_variance_explained.csv"),
+          row.names = FALSE)
+
 p <- plot_ordination(ps, ord, color = GROUP_VAR) +
   geom_point(size = 3) + theme_minimal()
 ggsave(tag_filename("beta_diversity_group.pdf"), p, width = 6, height = 6)
