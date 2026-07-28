@@ -3,23 +3,34 @@ plot_diversity.py
 
 Two-panel publication figure:
   (A) Alpha diversity (Shannon index by default) per sample, as a boxplot
-      split by Sarc / NonSarc, with individual points overlaid and a
-      Mann-Whitney U p-value annotated.
-  (B) Beta diversity via PCoA (classical/metric MDS, Torgerson's method) on
-      Bray-Curtis dissimilarity between samples, colored by group, with 95%
-      confidence ellipses per group and a PERMANOVA R^2 / p-value annotated
-      (permutation test on the pseudo-F statistic, Anderson 2001).
+      split by Sarc / NoSarc, with individual points overlaid and a
+      Mann-Whitney U p-value annotated. Computed independently in Python
+      from raw MetaPhlAn relative abundances (same filtering as the R
+      pipeline, via loaders._clinical_covariates).
+  (B) Beta diversity: PCoA (Bray-Curtis) scatter, colored by group. This
+      panel does NOT recompute PCoA in Python -- it reads the exact
+      coordinates and % variance explained that 02_diversity.R exported
+      right after its own ordinate(ps, method="PCoA", ...) call
+      (beta_diversity_pcoa_coords.csv, beta_diversity_pcoa_variance_explained.csv),
+      so Panel B is guaranteed to be pixel-for-pixel the same ordination as
+      R's beta_diversity_group.pdf rather than a second, independently
+      re-derived one (avoiding any mismatch in eigen-decomposition
+      convention, e.g. how ape::pcoa's negative eigenvalues from this
+      non-Euclidean Bray-Curtis distance get folded into % variance
+      explained).
 
 Uses the SAME sample filtering as the rest of the pipeline (Full.SaMu==1,
-age_def>=50, complete covariates) via loaders._clinical_covariates, but
-operates on raw (untransformed) MetaPhlAn relative abundances -- diversity
-metrics should be computed on proportions, not CLR- or log-transformed data.
+age_def>=50, complete covariates) via loaders._clinical_covariates for
+Panel A. Panel B is driven entirely by the R-exported CSVs -- it does not
+independently load or filter the abundance table.
 
 Usage:
   python plot_diversity.py \
       --input-dir /data/local/jy1008/SaMu/results/latest/metagenomics_R \
       --meta-filtered-csv meta_filtered_06242026.csv \
       --meta-df-csv meta_df_FullSaMu_06242026.csv \
+      --pcoa-coords-csv beta_diversity_pcoa_coords.csv \
+      --pcoa-variance-csv beta_diversity_pcoa_variance_explained.csv \
       --alpha-metric shannon \
       --n-permutations 999 \
       --out diversity_panels
@@ -30,14 +41,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import mannwhitneyu
 
 from loaders import _clinical_covariates
 
-GROUP_COLORS = {"NonSarc": "#4C72B0", "Sarc": "#C44E52"}
-GROUP_ORDER = ["NonSarc", "Sarc"]
+GROUP_COLORS = {"NoSarc": "#4C72B0", "Sarc": "#C44E52"}
+GROUP_ORDER = ["NoSarc", "Sarc"]
 
 
 # ---------------------------------------------------------------------------
@@ -60,27 +70,10 @@ ALPHA_METRICS = {"shannon": shannon, "simpson": simpson, "richness": richness}
 
 
 # ---------------------------------------------------------------------------
-# Classical (metric) PCoA -- Torgerson's method
-# ---------------------------------------------------------------------------
-def pcoa(dist_matrix, n_axes=2):
-    n = dist_matrix.shape[0]
-    D2 = dist_matrix ** 2
-    J = np.eye(n) - np.ones((n, n)) / n
-    B = -0.5 * J @ D2 @ J
-    eigvals, eigvecs = np.linalg.eigh(B)
-    order = np.argsort(eigvals)[::-1]
-    eigvals, eigvecs = eigvals[order], eigvecs[:, order]
-
-    total_pos = eigvals[eigvals > 0].sum()
-    var_explained = np.divide(eigvals, total_pos, out=np.zeros_like(eigvals),
-                              where=total_pos > 0)
-
-    coords = eigvecs[:, :n_axes] * np.sqrt(np.clip(eigvals[:n_axes], 0, None))
-    return coords, var_explained[:n_axes]
-
-
-# ---------------------------------------------------------------------------
-# PERMANOVA (Anderson 2001 pseudo-F, permutation p-value)
+# PERMANOVA (Anderson 2001 pseudo-F, permutation p-value). Still computed
+# independently in Python (printed/returned, matching adonis2's console
+# output in 02_diversity.R) -- only the PCoA *coordinates* are imported from
+# R now, not the PERMANOVA test itself.
 # ---------------------------------------------------------------------------
 def permanova(dist_matrix, groups, n_perm=999, seed=0):
     groups = np.asarray(groups)
@@ -117,23 +110,6 @@ def permanova(dist_matrix, groups, n_perm=999, seed=0):
     return f_obs, r2_obs, p_value
 
 
-def confidence_ellipse(ax, x, y, color, n_std=1.96, **kwargs):
-    """Approximate 95% confidence ellipse (n_std=1.96) for a 2D point cloud,
-    via eigendecomposition of the covariance matrix."""
-    if len(x) < 3:
-        return
-    cov = np.cov(x, y)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    order = np.argsort(eigvals)[::-1]
-    eigvals, eigvecs = eigvals[order], eigvecs[:, order]
-    angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
-    width, height = 2 * n_std * np.sqrt(np.clip(eigvals, 0, None))
-    ell = Ellipse((np.mean(x), np.mean(y)), width, height, angle=angle,
-                 facecolor=color, alpha=0.12, edgecolor=color, linewidth=1.2,
-                 **kwargs)
-    ax.add_patch(ell)
-
-
 def load_abundance(input_dir, meta_filtered_csv, meta_df_csv):
     input_dir = Path(input_dir)
     meta_filtered = pd.read_csv(input_dir / meta_filtered_csv)
@@ -148,8 +124,33 @@ def load_abundance(input_dir, meta_filtered_csv, meta_df_csv):
 
     common = wide.index.intersection(cov.index)
     abundance = wide.loc[common]
-    group = cov.loc[common, "sarc_status_bin"].map({0: "NonSarc", 1: "Sarc"})
+    group = cov.loc[common, "sarc_status_bin"].map({0: "NoSarc", 1: "Sarc"})
     return abundance, group
+
+
+def load_pcoa_from_r(input_dir, coords_csv, variance_csv, group_col):
+    """Read the PCoA coordinates + % variance explained that
+    02_diversity.R exported right after its ordinate() call, so Panel B
+    plots the SAME numbers R did rather than an independently re-derived
+    ordination. coords_csv is expected to have columns File_ID, PC1, PC2,
+    and <group_col> (whatever GROUP_VAR was in the R config); group values
+    are mapped 0/1 -> NoSarc/Sarc the same way Panel A's group labels are,
+    unless the R column already contains those string labels."""
+    input_dir = Path(input_dir)
+    coords = pd.read_csv(input_dir / coords_csv)
+    variance = pd.read_csv(input_dir / variance_csv).set_index("axis")["var_explained"]
+
+    # A single canonical label map, used whether the R column is numeric
+    # (0/1) or already text -- if R exported a differently-spelled label
+    # (e.g. "NonSarc") this normalizes it to match Panel A instead of
+    # passing it through as-is, which is what silently caused the two
+    # panels to disagree before.
+    label_map = {0: "NoSarc", 1: "Sarc", "NonSarc": "NoSarc", "NoSarc": "NoSarc",
+                "Sarc": "Sarc"}
+    coords["group"] = coords[group_col].map(label_map).fillna(coords[group_col])
+
+    var_explained = np.array([variance.loc["PC1"], variance.loc["PC2"]])
+    return coords.set_index("File_ID"), var_explained
 
 
 def main():
@@ -157,6 +158,19 @@ def main():
     ap.add_argument("--input-dir", required=True)
     ap.add_argument("--meta-filtered-csv", required=True)
     ap.add_argument("--meta-df-csv", required=True)
+    ap.add_argument("--pcoa-coords-csv", default="beta_diversity_pcoa_coords.csv",
+                     help="PCoA coordinates exported by 02_diversity.R right "
+                          "after its ordinate() call (default: "
+                          "beta_diversity_pcoa_coords.csv)")
+    ap.add_argument("--pcoa-variance-csv",
+                     default="beta_diversity_pcoa_variance_explained.csv",
+                     help="% variance explained per axis, exported by "
+                          "02_diversity.R (default: "
+                          "beta_diversity_pcoa_variance_explained.csv)")
+    ap.add_argument("--pcoa-group-col", default="sarc_status_bin",
+                     help="Group column name inside --pcoa-coords-csv (i.e. "
+                          "whatever GROUP_VAR was set to in R's config.R; "
+                          "default sarc_status_bin)")
     ap.add_argument("--alpha-metric", choices=list(ALPHA_METRICS),
                      default="shannon")
     ap.add_argument("--n-permutations", type=int, default=999)
@@ -166,22 +180,26 @@ def main():
     abundance, group = load_abundance(args.input_dir, args.meta_filtered_csv,
                                       args.meta_df_csv)
 
-    # --- Alpha diversity ---
+    # --- Alpha diversity (Panel A) ---
     metric_fn = ALPHA_METRICS[args.alpha_metric]
     alpha = abundance.apply(lambda row: metric_fn(row.values), axis=1)
     alpha_df = pd.DataFrame({"alpha": alpha, "group": group})
 
-    nonsarc_vals = alpha_df.loc[alpha_df["group"] == "NonSarc", "alpha"]
+    nosarc_vals = alpha_df.loc[alpha_df["group"] == "NoSarc", "alpha"]
     sarc_vals = alpha_df.loc[alpha_df["group"] == "Sarc", "alpha"]
-    _, alpha_p = mannwhitneyu(nonsarc_vals, sarc_vals, alternative="two-sided")
+    _, alpha_p = mannwhitneyu(nosarc_vals, sarc_vals, alternative="two-sided")
 
-    # --- Beta diversity ---
-    dist = squareform(pdist(abundance.values, metric="braycurtis"))
-    coords, var_explained = pcoa(dist, n_axes=2)
-    pcoa_df = pd.DataFrame({"PC1": coords[:, 0], "PC2": coords[:, 1],
-                            "group": group.values}, index=abundance.index)
+    # --- Beta diversity (Panel B) -- read R's own PCoA output directly ---
+    pcoa_df, var_explained = load_pcoa_from_r(
+        args.input_dir, args.pcoa_coords_csv, args.pcoa_variance_csv,
+        args.pcoa_group_col)
 
-    f_obs, r2_obs, perm_p = permanova(dist, group.values,
+    # PERMANOVA is still computed in Python (for the console summary below)
+    # from a fresh Bray-Curtis distance on the same abundance table -- only
+    # the PCoA coordinates/variance-explained are taken from R now.
+    common = abundance.index.intersection(pcoa_df.index)
+    dist = squareform(pdist(abundance.loc[common].values, metric="braycurtis"))
+    f_obs, r2_obs, perm_p = permanova(dist, group.loc[common].values,
                                       n_perm=args.n_permutations)
 
     # --- Figure ---
@@ -211,7 +229,7 @@ def main():
     ax_a.set_xticks(range(len(GROUP_ORDER)))
     ax_a.set_xticklabels(GROUP_ORDER, fontsize=11, fontweight="bold")
     ax_a.set_ylabel(f"{args.alpha_metric.capitalize()} diversity", fontsize=11)
-    ax_a.set_title("A. Alpha diversity", fontsize=13, fontweight="bold", loc="left")
+    ax_a.set_title("Alpha diversity", fontsize=13, fontweight="bold", loc="left")
     ax_a.spines["top"].set_visible(False)
     ax_a.spines["right"].set_visible(False)
 
@@ -225,19 +243,19 @@ def main():
     ax_a.text(0.5, bar_y + 0.03 * y_span, p_label, ha="center", fontsize=10)
     ax_a.set_ylim(top=bar_y + 0.12 * y_span)
 
-    # Panel B: PCoA
+    # Panel B: PCoA -- plotted directly from R's exported coordinates.
+    # Matches R's plot_ordination(..., color = GROUP_VAR) + geom_point(size = 3)
+    # + theme_minimal(): points colored by group only, no ellipses, no
+    # crosshairs. PERMANOVA R2/p ARE drawn here (unlike R's plot, which
+    # leaves that to adonis_group_results.csv) -- added back per request.
     for g in GROUP_ORDER:
         sub = pcoa_df[pcoa_df["group"] == g]
         ax_b.scatter(sub["PC1"], sub["PC2"], color=GROUP_COLORS[g],
                     label=g, s=32, alpha=0.85, edgecolor="black", linewidth=0.4)
-        confidence_ellipse(ax_b, sub["PC1"].values, sub["PC2"].values,
-                          GROUP_COLORS[g])
 
-    ax_b.axhline(0, color="grey", linewidth=0.6, linestyle="--")
-    ax_b.axvline(0, color="grey", linewidth=0.6, linestyle="--")
     ax_b.set_xlabel(f"PCo1 ({var_explained[0]*100:.1f}%)", fontsize=11)
     ax_b.set_ylabel(f"PCo2 ({var_explained[1]*100:.1f}%)", fontsize=11)
-    ax_b.set_title("B. Beta diversity (Bray-Curtis PCoA)", fontsize=13,
+    ax_b.set_title("Beta diversity (Bray-Curtis PCoA)", fontsize=13,
                   fontweight="bold", loc="left")
     ax_b.spines["top"].set_visible(False)
     ax_b.spines["right"].set_visible(False)
@@ -255,7 +273,7 @@ def main():
     print(f"Saved {args.out}.pdf and {args.out}.png")
     print(f"Alpha diversity ({args.alpha_metric}) Mann-Whitney p = {alpha_p:.4g}")
     print(f"PERMANOVA: pseudo-F = {f_obs:.3f}, R2 = {r2_obs:.3f}, p = {perm_p:.4g} "
-         f"({args.n_permutations} permutations)")
+         f"({args.n_permutations} permutations) -- also drawn on Panel B")
 
 
 if __name__ == "__main__":

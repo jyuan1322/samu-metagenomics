@@ -82,3 +82,32 @@ removed. The loader-specific data handling above is preserved as-is. The lasso,
 RF, ColumnTransformer, and importance-merge paths were exercised on synthetic
 data; the torch/captum/boruta paths are syntax-checked but were not executed
 here (those packages weren't available in the refactor environment).
+
+
+
+
+python plot_significance_grid.py /data/local/jy1008/SaMu/results/latest/metagenomics_ml/merged_feature_importance.csv --out significance_grid
+
+python extract_fold_auc.py /data/local/jy1008/SaMu/results/latest/metagenomics_ml \
+    --input-dir /data/local/jy1008/SaMu/results/latest/metagenomics_R \
+    --meta-filtered-csv meta_filtered_06242026.csv \
+    --meta-df-csv meta_df_FullSaMu_06242026.csv \
+    --models lasso_logreg random_forest fcnn \
+    --feature-group clr_taxa \
+    --out fold_auc.csv
+
+python plot_model_performance.py --from-csv fold_auc.csv --metric-label "ROC AUC"
+
+python plot_significance_heatmap.py /data/local/jy1008/SaMu/results/latest/metagenomics_ml/merged_feature_importance.csv \
+    --input-dir /data/local/jy1008/SaMu/results/latest/metagenomics_R \
+    --meta-filtered-csv meta_filtered_06242026.csv \
+    --meta-df-csv meta_df_FullSaMu_06242026.csv \
+    --out significance_heatmap
+
+python plot_diversity.py \
+    --input-dir /data/local/jy1008/SaMu/results/latest/metagenomics_R \
+    --meta-filtered-csv meta_filtered_06242026.csv \
+    --meta-df-csv meta_df_FullSaMu_06242026.csv \
+    --pcoa-coords-csv beta_diversity_pcoa_coords_06242026.csv \
+    --pcoa-variance-csv beta_diversity_pcoa_variance_explained_06242026.csv \
+    --out diversity_panels
