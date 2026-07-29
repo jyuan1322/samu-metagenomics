@@ -56,7 +56,7 @@ from scipy.spatial.distance import pdist
 plt.rcParams.update({
     "font.family": "sans-serif",
     "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "font.size": 8,
+    "font.size": 12,
     "axes.linewidth": 0.8,
     "axes.spines.top": False,
     "axes.spines.right": False,
@@ -208,7 +208,7 @@ def plot_panel_a(fig, gs_cell, long, stats, group_col, group_levels, colors,
         else:
             label = "n/a"
         ax.text(i, group_max_per_metab[i] + y_max * 0.03, label, ha="center", va="bottom",
-                fontsize=5, linespacing=1.2)
+                fontsize=7, linespacing=1.2)
 
     handles = [plt.Rectangle((0, 0), 1, 1, facecolor=c, edgecolor="black", alpha=0.85)
               for c in colors]
@@ -261,7 +261,9 @@ def cluster_columns_within_groups(mat, groups, group_order):
 def plot_panel_b(fig, gs_cell, scaled, long, group_col, group_levels,
                  feature_label="Metabolite", value_label="Conc."):
     """Clustered heatmap of all features, samples grouped by status."""
-    mat = scaled.T.fillna(0)  # feature x sample
+    # feature x sample
+    mat = scaled.T          # preserve NaNs
+    mat_cluster = mat.fillna(0)   # only for clustering
     group_lookup = long.set_index("record_id")[group_col]
 
     # Some samples in --raw have no NMR data at all and were dropped by
@@ -275,8 +277,8 @@ def plot_panel_b(fig, gs_cell, scaled, long, group_col, group_levels,
         print(f"NOTE: {n_dropped} sample(s) in --raw have no NMR data in --scaled "
               f"and are excluded from the Panel B heatmap.")
 
-    row_order, row_linkage_Z = cluster_order(mat, axis="rows", method="ward")
-    col_order, col_boundaries = cluster_columns_within_groups(mat, group_lookup, group_levels)
+    row_order, row_linkage_Z = cluster_order(mat_cluster, axis="rows", method="ward")
+    col_order, col_boundaries = cluster_columns_within_groups(mat_cluster, group_lookup, group_levels)
     ordered = mat.loc[row_order, col_order]
 
     group_colors = {g: GROUP_COLOR_CYCLE[i % len(GROUP_COLOR_CYCLE)]
@@ -287,7 +289,7 @@ def plot_panel_b(fig, gs_cell, scaled, long, group_col, group_levels,
 
     # Layout: [row dendrogram | heatmap+strip | colorbar], matching the
     # DEP2 Panel C layout.
-    outer = gs_cell.subgridspec(1, 3, width_ratios=[0.14, 1.0, 0.035], wspace=0.03)
+    outer = gs_cell.subgridspec(1, 3, width_ratios=[0.22, 1.0, 0.035], wspace=0.03)
     dend_outer = outer[0].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
     heat_outer = outer[1].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
 
@@ -314,24 +316,39 @@ def plot_panel_b(fig, gs_cell, scaled, long, group_col, group_levels,
         n = int((group_lookup.loc[col_order] == g).sum())
         ax_strip.axvspan(start, start + n, color=group_colors[g])
         ax_strip.text(start + n / 2, 0.5, f"{g} (n={n})", ha="center", va="center",
-                      fontsize=6, fontweight="bold", color="white")
+                      fontsize=8, fontweight="bold", color="white")
         start += n
 
     # --- heatmap (pcolormesh, crisp at any zoom in the saved PDF) ---
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad(color="lightgray")
+
     vlim = min(3.0, np.nanmax(np.abs(ordered.values))) if ordered.size else 1.0
-    im = ax_heat.pcolormesh(ordered.values, cmap="RdBu_r", vmin=-vlim, vmax=vlim,
-                            edgecolors="white", linewidth=0.4)
+
+    plot_data = np.ma.masked_invalid(ordered.values)
+
+    # im = ax_heat.pcolormesh(ordered.values, cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+    #                         edgecolors="white", linewidth=0.4)
+    im = ax_heat.pcolormesh(
+        plot_data,
+        cmap=cmap,
+        vmin=-vlim,
+        vmax=vlim,
+        edgecolors="white",
+        linewidth=0.4,
+    )
+
     ax_heat.invert_yaxis()
     for b in col_boundaries:
         ax_heat.axvline(b, color="black", linewidth=2.2)
     ax_heat.set_xticks([])
     ax_heat.set_yticks(np.arange(len(row_order)) + 0.5)
-    ax_heat.set_yticklabels(row_order, fontsize=6)
-    ax_heat.set_xlabel(f"Samples (n={len(col_order)}, clustered within group)", fontsize=7)
+    ax_heat.set_yticklabels(row_order, fontsize=8)
+    ax_heat.set_xlabel(f"Samples (n={len(col_order)}, clustered within group)", fontsize=8)
 
     cbar = fig.colorbar(im, cax=ax_cbar)
-    cbar.set_label(f"z-score (log10 {value_label})", fontsize=6)
-    cbar.ax.tick_params(labelsize=6)
+    cbar.set_label(f"z-score (log10 {value_label})", fontsize=8)
+    cbar.ax.tick_params(labelsize=8)
 
     ax_heat.set_title(f"{feature_label} levels across samples\n"
                       "(rows clustered; columns split by group, clustered within group)",

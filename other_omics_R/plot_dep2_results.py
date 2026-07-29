@@ -22,7 +22,9 @@ GC-MS, LC-MS (pos/neg), or the massspec (DIA proteomics) loader.
            groups by --group-col (e.g. sarc_status_bin), then hierarchically
            clustered *within* each group, so the group split is always
            visually respected and clustering only reorders samples inside a
-           group.
+           group. Missing values (e.g. a feature with no measurement for a
+           given sample) are shown as gray cells rather than a color, same
+           convention as plot_nmr_quorum_results.py's Panel B.
 
 Panel C requires two additional inputs beyond the results CSV, both already
 produced by 02_proteomics_dep2.R without any extra export step:
@@ -68,6 +70,22 @@ import matplotlib.pyplot as plt
 from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list
 from scipy.spatial.distance import pdist
 
+# ---------------------------------------------------------------------------
+# Publication styling
+# ---------------------------------------------------------------------------
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    "font.size": 12,
+    "axes.linewidth": 0.8,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "xtick.major.width": 0.8,
+    "ytick.major.width": 0.8,
+    "pdf.fonttype": 42,   # editable text in Illustrator
+    "ps.fonttype": 42,
+    "savefig.dpi": 300,
+})
 
 # -----------------------------------------------------------------------------
 # BH (Benjamini-Hochberg) correction, implemented directly rather than via
@@ -435,10 +453,15 @@ def build_enrichment_matrix(abundance_df: pd.DataFrame, meta_df: pd.DataFrame,
     row_mean = mat.mean(axis=1)
     row_std = mat.std(axis=1, ddof=0)
     # Guard against a (rare, post-filtering) zero-variance row: z-score would
-    # be 0/0. Leave it as a flat 0 (no enrichment signal) rather than NaN,
-    # so it doesn't break clustering distances.
+    # be 0/0 for every entry in that row, even where mat itself isn't
+    # missing. Fill *only* those rows with a flat 0 (no enrichment signal);
+    # genuine missing values in mat (NaN in, NaN out of sub/div) are left as
+    # NaN so they can be rendered as gray cells rather than silently treated
+    # as "no change", matching plot_nmr_quorum_results.py's Panel B.
     row_std_safe = row_std.replace(0, np.nan)
-    z_mat = mat.sub(row_mean, axis=0).div(row_std_safe, axis=0).fillna(0.0)
+    z_mat = mat.sub(row_mean, axis=0).div(row_std_safe, axis=0)
+    zero_var_rows = row_std[row_std == 0].index
+    z_mat.loc[zero_var_rows] = z_mat.loc[zero_var_rows].fillna(0.0)
 
     return z_mat, groups
 
@@ -480,8 +503,13 @@ def cluster_columns_within_groups(z_mat: pd.DataFrame, groups: pd.Series, group_
 
 def plot_heatmap(fig, gs_cell, z_mat: pd.DataFrame, groups: pd.Series,
                  group_order: list, label_wrap_width: int = 28):
-    row_order, row_linkage_Z = cluster_order(z_mat, axis="rows")
-    col_order, col_boundaries = cluster_columns_within_groups(z_mat, groups, group_order)
+    # z_mat may contain genuine NaN (see build_enrichment_matrix) which must
+    # stay NaN for display (-> gray cells), but pdist/linkage need finite
+    # input, so clustering runs on a 0-filled copy — same split as
+    # plot_nmr_quorum_results.py's mat / mat_cluster.
+    z_mat_cluster = z_mat.fillna(0.0)
+    row_order, row_linkage_Z = cluster_order(z_mat_cluster, axis="rows")
+    col_order, col_boundaries = cluster_columns_within_groups(z_mat_cluster, groups, group_order)
     ordered = z_mat.loc[row_order, col_order]
 
     group_colors = {g: GROUP_COLOR_CYCLE[i % len(GROUP_COLOR_CYCLE)]
@@ -494,7 +522,7 @@ def plot_heatmap(fig, gs_cell, z_mat: pd.DataFrame, groups: pd.Series,
     # column split into a thin group-annotation strip above the heatmap
     # proper. The dendrogram column gets a matching blank top row so its
     # dendrogram aligns vertically with the heatmap (not the strip).
-    outer = gs_cell.subgridspec(1, 3, width_ratios=[0.14, 1.0, 0.035], wspace=0.03)
+    outer = gs_cell.subgridspec(1, 3, width_ratios=[0.22, 1.0, 0.035], wspace=0.03)
     dend_outer = outer[0].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
     heat_outer = outer[1].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
 
@@ -531,8 +559,12 @@ def plot_heatmap(fig, gs_cell, z_mat: pd.DataFrame, groups: pd.Series,
     # PDF, and each cell is a distinct, selectable object. pcolormesh places
     # row 0 at the BOTTOM by default (opposite of imshow) — invert_yaxis()
     # restores top-to-bottom order matching the y-tick labels.
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad(color="lightgray")
+
     vlim = min(3.0, np.nanmax(np.abs(ordered.values))) if ordered.size else 1.0
-    im = ax_heat.pcolormesh(ordered.values, cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+    plot_data = np.ma.masked_invalid(ordered.values)
+    im = ax_heat.pcolormesh(plot_data, cmap=cmap, vmin=-vlim, vmax=vlim,
                             edgecolors="white", linewidth=0.4)
     ax_heat.invert_yaxis()
     for b in col_boundaries:
@@ -547,9 +579,9 @@ def plot_heatmap(fig, gs_cell, z_mat: pd.DataFrame, groups: pd.Series,
     cbar.set_label("Row z-score\n(VSN-normalized log$_2$ intensity)", fontsize=6)
     cbar.ax.tick_params(labelsize=6)
 
-    ax_heat.set_title("Feature levels across samples\n"
-                      "(rows clustered; columns split by group, clustered within group)",
-                      loc="left", fontweight="bold", fontsize=8)
+    # ax_heat.set_title("Feature levels across samples\n"
+    #                   "(rows clustered; columns split by group, clustered within group)",
+    #                   loc="left", fontweight="bold", fontsize=8)
 
 
 # -----------------------------------------------------------------------------
@@ -568,7 +600,7 @@ def make_figure(feat_df: pd.DataFrame, contrast: str, experiment_name: str,
     if include_heatmap:
         fig = plt.figure(figsize=(7.6, 9.0), constrained_layout=True)
         gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.5])
-        top_row = gs[0].subgridspec(1, 2, wspace=0.35)
+        top_row = gs[0].subgridspec(1, 2, wspace=0.15)
         ax_volcano = fig.add_subplot(top_row[0])
         ax_bar = fig.add_subplot(top_row[1])
     else:

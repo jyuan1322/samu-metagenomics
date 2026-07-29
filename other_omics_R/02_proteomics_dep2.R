@@ -278,6 +278,19 @@ meanSdPlot(assay(se_norm)); dev.off()
 pdf(file.path(res_dir, "dep2_missing_values_heatmap.pdf"), width = 8, height = 6)
 plot_missval(se_filt); dev.off()
 
+# Save the pre-imputation, VSN-normalized matrix (real missing values kept
+# as NA) alongside the imputed one, so downstream plotting (Panel C of
+# plot_dep2_results.py) can show actual missingness as gray cells instead
+# of DEP2's imputed fill values. Same positional-alignment caveat as the
+# se_imp export above: colData(se_norm)$label, not colnames(assay()),
+# since filter_se/normalize_vsn don't touch column naming or order.
+proteomics_df_preimp <- as.data.frame(t(assay(se_norm)))
+proteomics_df_preimp$Sample <- colData(se_norm)$label
+proteomics_df_preimp <- proteomics_df_preimp[, c("Sample", setdiff(colnames(proteomics_df_preimp), "Sample"))]
+write.csv(proteomics_df_preimp,
+          file.path(res_dir, paste0(cfg$experiment_name, "_dep2_vsn_matrix.csv")),
+          row.names = FALSE)
+
 se_imp <- DEP2::impute(se_norm, fun = cfg$impute_fun)
 
 # Save imputed matrix (samples x features) and metadata.

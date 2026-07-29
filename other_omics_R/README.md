@@ -3,7 +3,7 @@ python plot_dep2_results.py \
     --input /data/local/jy1008/SaMu/results/latest/proteomics_GC-MS/GC_MS_dep2_results.csv \
     --contrast Sarc_vs_NoSarc \
     --experiment-name GC-MS \
-    --abundance-table /data/local/jy1008/SaMu/results/latest/proteomics_GC-MS/GC_MS_dep2_vsn_imputed_matrix.csv \
+    --abundance-table /data/local/jy1008/SaMu/results/latest/proteomics_GC-MS/GC_MS_dep2_vsn_matrix.csv \
     --sample-metadata /data/local/jy1008/SaMu/results/latest/proteomics_GC-MS/GC_MS_dep2_vsn_imputed_metadata.csv \
     --output /data/local/jy1008/SaMu/results/latest/proteomics_GC-MS/GC_MS_dep2_volcano_top_features
 
@@ -12,7 +12,7 @@ python plot_dep2_results.py \
     --input /data/local/jy1008/SaMu/results/latest/proteomics/proteomics_dep2_results.csv \
     --contrast Sarc_vs_NoSarc \
     --experiment-name proteomics \
-    --abundance-table /data/local/jy1008/SaMu/results/latest/proteomics/proteomics_dep2_vsn_imputed_matrix.csv \
+    --abundance-table /data/local/jy1008/SaMu/results/latest/proteomics/proteomics_dep2_vsn_matrix.csv \
     --sample-metadata /data/local/jy1008/SaMu/results/latest/proteomics/proteomics_dep2_vsn_imputed_metadata.csv \
     --output /data/local/jy1008/SaMu/results/latest/proteomics/proteomics_dep2_volcano_top_features
 

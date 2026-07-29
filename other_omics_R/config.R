@@ -72,44 +72,44 @@ QUORUM <- list(
 #         original run_proteomics.R) and runs the contaminant/Q-value QC.
 #         "wide" reads sample x feature CSVs that are merged on feature name
 #         (original run_proteomics_LC_GC.R); QC is skipped.
-PROTEOMICS <- list(
-  loader = "massspec",          # "massspec" | "wide"
+# PROTEOMICS <- list(
+#   loader = "massspec",          # "massspec" | "wide"
+#
+#   parent_dir = "/data/local/jy1008/SaMu/proteomics",
+#   output_dir = "/data/local/jy1008/SaMu/results/latest/proteomics",
+#   experiment_name = "proteomics",
 
-  parent_dir = "/data/local/jy1008/SaMu/proteomics",
-  output_dir = "/data/local/jy1008/SaMu/results/latest/proteomics",
-  experiment_name = "proteomics",
- 
-  # massspec loader: strip these from each filename to get the sample label.
-  sample_name_strip = c("SaMu_sPROT1_rd1_pr1.0_rs0_", "_v1.csv"),
-  # massspec QC: keep non-contaminants with Global.Q.Value below this.
-  qvalue_cutoff = 0.01,
- 
-  # DEP2 missing-value filter: keep features valid in >= `fraction` of samples
-  # within at least one condition; `thr` is the allowed missing count.
-  filter_thr      = 50,
-  filter_fraction = 0.25,
-  # Sweep grid for the diagnostic filtering-threshold plot.
-  filter_sweep_fractions  = seq(0.1, 0.9, by = 0.05),
-  filter_sweep_thresholds = c(10, 25, 50, 100),
- 
-  impute_fun = "MinDet",        # DEP2::impute fun
-
-  de_test = "Sarc_vs_NoSarc",   # test_diff contrast (matches GROUP_LEVELS)
-  heatmap_top_n = 50,           # top proteins by DE p-value in the heatmap
- 
-  # Internal-standard normalization (technical/injection correction) applied
-  # to raw intensities before filter_se/normalize_vsn. NA = skip it. Matched
-  # by substring against the ID column (see normalize_to_internal_standard()
-  # in 02_proteomics_dep2.R for why substring rather than exact match).
-  # Not typically applicable to massspec (DIA proteomics) runs.
-  internal_standard             = NA,
-  internal_standard_pseudocount = 1,
-  internal_standard_log         = FALSE  # leave FALSE: normalize_vsn() below
-                                         # already log-transforms; see the
-                                         # comment above
-                                         # normalize_to_internal_standard()
-                                         # for why logging twice is wrong.
-)
+#   # massspec loader: strip these from each filename to get the sample label.
+#   sample_name_strip = c("SaMu_sPROT1_rd1_pr1.0_rs0_", "_v1.csv"),
+#   # massspec QC: keep non-contaminants with Global.Q.Value below this.
+#   qvalue_cutoff = 0.01,
+#
+#   # DEP2 missing-value filter: keep features valid in >= `fraction` of samples
+#   # within at least one condition; `thr` is the allowed missing count.
+#   filter_thr      = 50,
+#   filter_fraction = 0.25,
+#   # Sweep grid for the diagnostic filtering-threshold plot.
+#   filter_sweep_fractions  = seq(0.1, 0.9, by = 0.05),
+#   filter_sweep_thresholds = c(10, 25, 50, 100),
+# 
+#   impute_fun = "MinDet",        # DEP2::impute fun
+#
+#   de_test = "Sarc_vs_NoSarc",   # test_diff contrast (matches GROUP_LEVELS)
+#   heatmap_top_n = 50,           # top proteins by DE p-value in the heatmap
+# 
+#   # Internal-standard normalization (technical/injection correction) applied
+#   # to raw intensities before filter_se/normalize_vsn. NA = skip it. Matched
+#   # by substring against the ID column (see normalize_to_internal_standard()
+#   # in 02_proteomics_dep2.R for why substring rather than exact match).
+#   # Not typically applicable to massspec (DIA proteomics) runs.
+#   internal_standard             = NA,
+#   internal_standard_pseudocount = 1,
+#   internal_standard_log         = FALSE  # leave FALSE: normalize_vsn() below
+#                                          # already log-transforms; see the
+#                                          # comment above
+#                                          # normalize_to_internal_standard()
+#                                          # for why logging twice is wrong.
+# )
 
 # To run a GC-MS / LC-MS variant instead, comment out the PROTEOMICS block
 # above and uncomment the matching block below (only one PROTEOMICS should be
@@ -122,27 +122,27 @@ PROTEOMICS <- list(
 #     (set to a number, e.g. 50, to cap the heatmap like massspec does)
 
 # --- GC-MS -------------------------------------------------------------
-# PROTEOMICS <- list(
-#   loader = "wide",
-# 
-#   parent_dir = "/data/local/jy1008/SaMu/proteomics/GC_MS",
-#   output_dir = "/data/local/jy1008/SaMu/results/latest/proteomics_GC-MS",
-#   experiment_name = "GC_MS",
-# 
-#   filter_thr      = 0,
-#   filter_fraction = 0.25,
-#   filter_sweep_fractions  = seq(0.1, 0.9, by = 0.05),
-#   filter_sweep_thresholds = c(10, 25, 50, 100),
-# 
-#   impute_fun = "MinDet",
-# 
-#   de_test = "Sarc_vs_NoSarc",
-#   heatmap_top_n = Inf,
-# 
-#   internal_standard             = "4-Nitrobenzoic acid, TMS derivative",
-#   internal_standard_pseudocount = 1,
-#   internal_standard_log         = FALSE
-# )
+PROTEOMICS <- list(
+  loader = "wide",
+
+  parent_dir = "/data/local/jy1008/SaMu/proteomics/GC_MS",
+  output_dir = "/data/local/jy1008/SaMu/results/latest/proteomics_GC-MS",
+  experiment_name = "GC_MS",
+
+  filter_thr      = 0,
+  filter_fraction = 0.25,
+  filter_sweep_fractions  = seq(0.1, 0.9, by = 0.05),
+  filter_sweep_thresholds = c(10, 25, 50, 100),
+
+  impute_fun = "MinDet",
+
+  de_test = "Sarc_vs_NoSarc",
+  heatmap_top_n = Inf,
+
+  internal_standard             = "4-Nitrobenzoic acid, TMS derivative",
+  internal_standard_pseudocount = 1,
+  internal_standard_log         = FALSE
+)
 
 # --- LC-MS (negative mode) ----------------------------------------------
 # PROTEOMICS <- list(
