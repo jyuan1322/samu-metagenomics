@@ -96,7 +96,7 @@ python extract_fold_auc.py /data/local/jy1008/SaMu/results/latest/metagenomics_m
     --feature-group clr_taxa \
     --out fold_auc.csv
 
-python plot_model_performance.py --from-csv fold_auc.csv --metric-label "ROC AUC"
+python plot_model_performance.py --from-csv /data/local/jy1008/SaMu/results/latest/metagenomics_ml/fold_auc.csv --metric-label "ROC AUC"
 
 python plot_significance_heatmap.py /data/local/jy1008/SaMu/results/latest/metagenomics_ml/merged_feature_importance.csv \
     --input-dir /data/local/jy1008/SaMu/results/latest/metagenomics_R \

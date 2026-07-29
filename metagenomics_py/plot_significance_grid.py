@@ -38,6 +38,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Patch
 
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.sans-serif"] = ["Arial"]  # falls back to DejaVu Sans if Arial isn't installed
+
 MODEL_COLS = {
     "DESeq2": "sig_deseq2",
     "Lasso logistic regression": "sig_lasso",
@@ -161,7 +164,7 @@ def plot_grid(df, out_prefix="significance_grid", min_sig=2, sort_by="count"):
     # Count of total significant features beneath each model's column.
     for col_i, model in enumerate(models):
         ax.text(col_i + 0.45, -0.5, f"n = {total_counts[model]}",
-                ha="center", va="center", fontsize=9)
+                ha="center", va="center", fontsize=9, rotation=30)
 
     ax.set_aspect("equal")
     for spine in ax.spines.values():

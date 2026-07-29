@@ -45,8 +45,10 @@ from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list
 
 from loaders import load_metagenomics
 
-GROUP_COLORS = {"NonSarc": "#4C72B0", "Sarc": "#C44E52"}
+GROUP_COLORS = {"NonSarc": "#4DAF4A", "Sarc": "#984EA3"}
 
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.sans-serif"] = ["Arial"]  # falls back to DejaVu Sans if Arial isn't installed
 
 def compute_significance(df):
     """Same significance rules as plot_significance_grid.py."""

@@ -37,6 +37,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.sans-serif"] = ["Arial"]  # falls back to DejaVu Sans if Arial isn't installed
+
+
 MODEL_DISPLAY = {
     "lasso_logreg": "Lasso logistic\nregression",
     "random_forest": "Random forest",

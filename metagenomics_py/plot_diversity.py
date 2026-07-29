@@ -46,9 +46,12 @@ from scipy.stats import mannwhitneyu
 
 from loaders import _clinical_covariates
 
-GROUP_COLORS = {"NoSarc": "#4C72B0", "Sarc": "#C44E52"}
+# GROUP_COLORS = {"NoSarc": "#4C72B0", "Sarc": "#C44E52"}
+GROUP_COLORS = {"NoSarc": "#4DAF4A", "Sarc": "#984EA3"}
 GROUP_ORDER = ["NoSarc", "Sarc"]
 
+plt.rcParams["font.family"] = "sans-serif"
+plt.rcParams["font.sans-serif"] = ["Arial"]  # falls back to DejaVu Sans if Arial isn't installed
 
 # ---------------------------------------------------------------------------
 # Alpha diversity metrics (computed per sample from a relative-abundance row)
@@ -57,6 +60,11 @@ def shannon(p):
     p = p[p > 0]
     return float(-(p * np.log(p)).sum())
 
+def shannon_normalized(row_values, log_total_n_taxa):
+    p = row_values / row_values.sum()      # normalize to proportions, like vegan::diversity
+    p = p[p > 0]
+    h = -(p * np.log(p)).sum()
+    return h / log_total_n_taxa             # divide by log(total taxa in table), not per-sample richness
 
 def simpson(p):
     return float(1 - (p ** 2).sum())
@@ -66,7 +74,7 @@ def richness(p):
     return float((p > 0).sum())
 
 
-ALPHA_METRICS = {"shannon": shannon, "simpson": simpson, "richness": richness}
+ALPHA_METRICS = {"normalized shannon": shannon_normalized, "simpson": simpson, "richness": richness}
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +180,7 @@ def main():
                           "whatever GROUP_VAR was set to in R's config.R; "
                           "default sarc_status_bin)")
     ap.add_argument("--alpha-metric", choices=list(ALPHA_METRICS),
-                     default="shannon")
+                     default="Normalized shannon")
     ap.add_argument("--n-permutations", type=int, default=999)
     ap.add_argument("--out", default="diversity_panels")
     args = ap.parse_args()
@@ -181,8 +189,13 @@ def main():
                                       args.meta_df_csv)
 
     # --- Alpha diversity (Panel A) ---
-    metric_fn = ALPHA_METRICS[args.alpha_metric]
-    alpha = abundance.apply(lambda row: metric_fn(row.values), axis=1)
+    # metric_fn = ALPHA_METRICS[args.alpha_metric]
+    # alpha = abundance.apply(lambda row: metric_fn(row.values), axis=1)
+    log_total_n_taxa = np.log(abundance.shape[1])   # == log(nrow(tax_table(ps))) in R
+    alpha = abundance.apply(
+        lambda row: shannon_normalized(row.values, log_total_n_taxa), axis=1)
+
+
     alpha_df = pd.DataFrame({"alpha": alpha, "group": group})
 
     nosarc_vals = alpha_df.loc[alpha_df["group"] == "NoSarc", "alpha"]
