@@ -3,12 +3,19 @@ plot_significance_heatmap.py
 
 Publication-quality heatmap of CLR-transformed taxon abundance for all
 features significant in >=1 model (DESeq2 / lasso / FCNN / random forest),
-with samples split into two column blocks (Sarc vs. NonSarc) and clustered
+with samples split into two column blocks (NoSarc vs. Sarc) and clustered
 SEPARATELY within each block (columns are never reordered across the
-Sarc/NonSarc boundary). Rows are clustered once, globally, so the same
+NoSarc/Sarc boundary). Rows are clustered once, globally, so the same
 feature order applies to both blocks. Features significant in >=2 models
 (the ones that would appear in the significance grid) are marked with an
 asterisk after their row label.
+
+Layout mirrors plot_nmr_quorum_results.py's Panel B heatmap exactly:
+[row dendrogram | group strip + heatmap | colorbar]. Only rows get a
+dendrogram; columns are still clustered within each group (NoSarc / Sarc)
+but that clustering is only used to order the columns -- no column
+dendrogram is drawn. The group split is shown as a single continuous
+color strip with "{group} (n=...)" labels, same as the NMR script.
 
 Significance rules (same as plot_significance_grid.py):
   DESeq2   : deseq2_padj < 0.05
@@ -18,8 +25,8 @@ Significance rules (same as plot_significance_grid.py):
   RF       : rf_selection_frequency > 0
 
 Color scale: each feature (row) is z-scored across ALL included samples
-(both groups combined), so color is comparable between the Sarc and
-NonSarc blocks.
+(both groups combined), so color is comparable between the NoSarc and
+Sarc blocks.
 
 Requires loaders.py (from metagenomics_py) on the Python path to rebuild the
 CLR-transformed abundance matrix + sarc/non-sarc labels -- no retraining
@@ -40,15 +47,18 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
 from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list
 
 from loaders import load_metagenomics
 
-GROUP_COLORS = {"NonSarc": "#4DAF4A", "Sarc": "#984EA3"}
+GROUP_COLORS = {"NoSarc": "#4DAF4A", "Sarc": "#984EA3"}
+GROUP_ORDER = ["NoSarc", "Sarc"]
 
 plt.rcParams["font.family"] = "sans-serif"
 plt.rcParams["font.sans-serif"] = ["Arial"]  # falls back to DejaVu Sans if Arial isn't installed
+plt.rcParams["pdf.fonttype"] = 42  # editable text in Illustrator, matching plot_nmr_quorum_results.py
+plt.rcParams["ps.fonttype"] = 42
+
 
 def compute_significance(df):
     """Same significance rules as plot_significance_grid.py."""
@@ -80,24 +90,21 @@ def clean_feature_name(f):
 
 
 def cluster_order(matrix, method="average", metric="euclidean"):
-    """matrix: observations x dimensions. Returns leaf order (row indices)."""
+    """matrix: observations x dimensions. Returns leaf order (row indices)
+    and the linkage matrix (None if fewer than 2 observations)."""
     if matrix.shape[0] < 2:
         return list(range(matrix.shape[0])), None
     Z = linkage(matrix, method=method, metric=metric)
     return leaves_list(Z), Z
 
 
-def draw_dendrogram(ax, Z, n_leaves, orientation="top"):
-    """Draw a dendrogram whose leaf x-positions line up with imshow column
-    centers (i + 0.5), by rescaling scipy's default 10-unit leaf spacing."""
-    if Z is None:
-        ax.axis("off")
-        return
-    dd = dendrogram(Z, no_plot=True)
-    for xs, ys in zip(dd["icoord"], dd["dcoord"]):
-        xs_scaled = [x / 10.0 for x in xs]
-        ax.plot(xs_scaled, ys, color="black", linewidth=0.7)
-    ax.set_xlim(0, n_leaves)
+def draw_row_dendrogram(ax, Z):
+    """Left-oriented row dendrogram -- same call as plot_nmr_quorum_results.py's
+    Panel B row dendrogram (no column dendrogram is ever drawn)."""
+    if Z is not None:
+        dendrogram(Z, orientation="left", ax=ax, no_labels=True,
+                  color_threshold=0, above_threshold_color="#555555",
+                  link_color_func=lambda k: "#555555")
     ax.axis("off")
 
 
@@ -140,99 +147,108 @@ def main():
               f"{' ...' if len(missing) > 10 else ''}")
 
     mat = X_clr[feats].T  # features x samples
-    y = y.loc[mat.columns]
+    y = y.loc[mat.columns]  # 0 = NoSarc, 1 = Sarc
 
     # z-score each feature (row) across ALL included samples
     z = mat.sub(mat.mean(axis=1), axis=0).div(mat.std(axis=1, ddof=0), axis=0)
     z = z.fillna(0.0)
 
-    # --- row clustering (global, across both groups) ---
-    row_order, row_Z = cluster_order(z.values)
+    # --- row clustering (global, across both groups), Ward linkage --
+    # same as plot_nmr_quorum_results.py's row clustering.
+    row_order, row_Z = cluster_order(z.values, method="ward")
     z = z.iloc[row_order]
     row_labels = [clean_feature_name(f) + (" *" if f in star_features else "")
                  for f in z.index]
 
-    # --- column clustering, separately within each group ---
-    nonsarc_samples = y[y == 0].index
-    sarc_samples = y[y == 1].index
+    # --- column clustering, separately within each group. Order only --
+    # no column dendrogram is drawn, matching plot_nmr_quorum_results.py. ---
+    sample_groups = pd.Series(np.where(y.values == 1, "Sarc", "NoSarc"),
+                              index=y.index)
 
     def ordered_block(samples):
         if len(samples) == 0:
-            return samples, None
+            return list(samples)
         sub = z[samples]
-        order, Z = cluster_order(sub.T.values)  # samples x features
-        return sub.columns[order], Z
+        order, _ = cluster_order(sub.T.values, method="ward")
+        return list(sub.columns[order])
 
-    nonsarc_order, nonsarc_Z = ordered_block(nonsarc_samples)
-    sarc_order, sarc_Z = ordered_block(sarc_samples)
+    col_order = []
+    boundaries = []
+    for g in GROUP_ORDER:
+        members = [s for s in sample_groups[sample_groups == g].index
+                   if s in z.columns]
+        col_order.extend(ordered_block(members))
+        boundaries.append(len(col_order))
+    boundaries = boundaries[:-1]  # drop final boundary (end of matrix)
 
-    n_nonsarc, n_sarc = len(nonsarc_order), len(sarc_order)
-    z_ordered = pd.concat([z[nonsarc_order], z[sarc_order]], axis=1)
+    ordered = z[col_order]
+    n_feat = len(ordered)
+    n_samp = len(col_order)
 
-    # --- figure layout: dendrograms on top (per block), group color bar,
-    # heatmap below, blocks separated by a gap column ---
-    n_feat = len(z_ordered)
-    gap = max(1, round(0.02 * (n_nonsarc + n_sarc)))
-    cbar_w = max(2, round(0.05 * (n_nonsarc + n_sarc)))
-    fig_w = max(9, 0.18 * (n_nonsarc + n_sarc + gap + cbar_w) + 4)
+    # --- figure layout: [row dendrogram | label spacer | strip + heatmap |
+    # colorbar]. The spacer column (not an axis) reserves room for the
+    # larger row-label font so it doesn't overlap the dendrogram, without
+    # inflating wspace globally (which would also push the colorbar away
+    # from the heatmap). ---
+    fig_w = max(10, 0.16 * n_samp + 5.5)
     fig_h = max(6, 0.34 * n_feat + 2.5)
     fig = plt.figure(figsize=(fig_w, fig_h))
-    gs = GridSpec(3, 4, figure=fig,
-                 width_ratios=[n_nonsarc, gap, n_sarc, cbar_w],
-                 height_ratios=[1.1, 0.18, max(3, 0.34 * n_feat)],
-                 hspace=0.03, wspace=0.02)
+    outer = fig.add_gridspec(1, 4, width_ratios=[0.13, 0.10, 1.0, 0.035],
+                             wspace=0.05)
+    dend_outer = outer[0].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
+    heat_outer = outer[2].subgridspec(2, 1, height_ratios=[0.08, 1.0], hspace=0.02)
 
-    ax_dendro_ns = fig.add_subplot(gs[0, 0])
-    ax_dendro_s = fig.add_subplot(gs[0, 2])
-    ax_group_ns = fig.add_subplot(gs[1, 0])
-    ax_group_s = fig.add_subplot(gs[1, 2])
-    ax_heat = fig.add_subplot(gs[2, 0:3])
-    cbar_ax = fig.add_subplot(gs[2, 3])
+    ax_dend = fig.add_subplot(dend_outer[1])
+    ax_strip = fig.add_subplot(heat_outer[0])
+    ax_heat = fig.add_subplot(heat_outer[1])
+    ax_cbar = fig.add_subplot(outer[3])
 
-    draw_dendrogram(ax_dendro_ns, nonsarc_Z, n_nonsarc)
-    draw_dendrogram(ax_dendro_s, sarc_Z, n_sarc)
+    draw_row_dendrogram(ax_dend, row_Z)
 
-    ax_group_ns.imshow([[0] * max(n_nonsarc, 1)],
-                       cmap=plt.matplotlib.colors.ListedColormap([GROUP_COLORS["NonSarc"]]),
-                       aspect="auto")
-    ax_group_ns.set_xticks([]); ax_group_ns.set_yticks([])
-    ax_group_s.imshow([[0] * max(n_sarc, 1)],
-                      cmap=plt.matplotlib.colors.ListedColormap([GROUP_COLORS["Sarc"]]),
-                      aspect="auto")
-    ax_group_s.set_xticks([]); ax_group_s.set_yticks([])
+    # --- group annotation strip (top), same style as
+    # plot_nmr_quorum_results.py's Panel B ---
+    ax_strip.set_xlim(0, n_samp)
+    ax_strip.set_ylim(0, 1)
+    ax_strip.set_xticks([]); ax_strip.set_yticks([])
+    for spine in ax_strip.spines.values():
+        spine.set_visible(False)
+    start = 0
+    for g in GROUP_ORDER:
+        n = int((sample_groups.loc[col_order] == g).sum())
+        ax_strip.axvspan(start, start + n, color=GROUP_COLORS[g])
+        ax_strip.text(start + n / 2, 0.5, f"{g} (n={n})", ha="center", va="center",
+                     fontsize=13, fontweight="bold", color="white")
+        start += n
 
-    vmax = np.nanpercentile(np.abs(z_ordered.values), 95) or 1.0
-    im = ax_heat.imshow(z_ordered.values, aspect="auto", cmap="RdBu_r",
-                        vmin=-vmax, vmax=vmax,
-                        extent=(0, n_nonsarc + gap + n_sarc, n_feat, 0))
-    # blank out the gap column so it reads as a visual break between blocks
-    ax_heat.axvspan(n_nonsarc, n_nonsarc + gap, color="white", zorder=3)
-
-    ax_heat.set_yticks(np.arange(n_feat) + 0.5)
-    ax_heat.set_yticklabels(row_labels, fontsize=10, fontstyle="italic")
+    # --- heatmap (pcolormesh, same as plot_nmr_quorum_results.py) ---
+    vlim = min(3.0, np.nanmax(np.abs(ordered.values))) if ordered.size else 1.0
+    im = ax_heat.pcolormesh(ordered.values, cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+                            edgecolors="white", linewidth=0.4)
+    ax_heat.invert_yaxis()
+    for b in boundaries:
+        ax_heat.axvline(b, color="black", linewidth=2.2)
     ax_heat.set_xticks([])
+    ax_heat.set_yticks(np.arange(n_feat) + 0.5)
+    ax_heat.set_yticklabels(row_labels, fontsize=13, fontstyle="italic")
+    ax_heat.tick_params(axis="y", pad=6)  # small buffer so labels don't crowd the dendrogram
+    ax_heat.set_xlabel(f"Samples (n={n_samp}, clustered within group)", fontsize=12)
     for spine in ax_heat.spines.values():
         spine.set_visible(False)
 
-    ax_dendro_ns.set_title("NonSarc", fontsize=13, fontweight="bold",
-                           color=GROUP_COLORS["NonSarc"])
-    ax_dendro_s.set_title("Sarc", fontsize=13, fontweight="bold",
-                          color=GROUP_COLORS["Sarc"])
-
-    cbar = fig.colorbar(im, cax=cbar_ax)
-    cbar.set_label("Row z-score (CLR abundance)", fontsize=11)
-    cbar.ax.tick_params(labelsize=9)
+    cbar = fig.colorbar(im, cax=ax_cbar)
+    cbar.set_label("Row z-score (CLR abundance)", fontsize=13)
+    cbar.ax.tick_params(labelsize=11)
 
     fig.suptitle(
         f"Features significant in \u2265{args.min_sig} model"
         f"{'s' if args.min_sig != 1 else ''} "
         f"(* = significant in \u2265{args.asterisk_min_sig} models)",
-        fontsize=15, fontweight="bold", y=0.995)
+        fontsize=18, fontweight="bold", y=0.995)
 
     fig.savefig(f"{args.out}.pdf", bbox_inches="tight")
     fig.savefig(f"{args.out}.png", dpi=300, bbox_inches="tight")
     print(f"Saved {args.out}.pdf and {args.out}.png "
-          f"({n_feat} features x {n_nonsarc + n_sarc} samples; "
+          f"({n_feat} features x {n_samp} samples; "
           f"{len(star_features)} starred)")
 
 
