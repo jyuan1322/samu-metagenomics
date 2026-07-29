@@ -60,7 +60,7 @@ QUORUM <- list(
   quorum_csv            = "metadata/20251030_SaMu_QSP_data_v3.csv",
   quorum_grouping_file  = "metadata/QSP_overview_PN1_long.csv",
   quorum_col_regex      = "_Quant\\.Prob$",
-  quorum_below_detection = "UNK_N",
+  # quorum_below_detection = "UNK_N",
 
   epsilon = 1e-6
 )

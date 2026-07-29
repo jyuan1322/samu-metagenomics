@@ -321,7 +321,7 @@ def plot_panel_b(fig, gs_cell, scaled, long, group_col, group_levels,
 
     # --- heatmap (pcolormesh, crisp at any zoom in the saved PDF) ---
     cmap = plt.get_cmap("RdBu_r").copy()
-    cmap.set_bad(color="lightgray")
+    cmap.set_bad(color="darkgray")
 
     vlim = min(3.0, np.nanmax(np.abs(ordered.values))) if ordered.size else 1.0
 
